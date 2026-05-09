@@ -26,7 +26,7 @@ data/
 __pycache__/
 .venv/
 .DS_Store
-outputs/story-1/*.npy
+
 
 # IDE
 .vscode/
