@@ -19,6 +19,8 @@ env/
 # Data files (large — store in shared drive, not git)
 outputs/
 *.csv
+!data/
+!data/*.csv
 *.pkl
 *.npy
 *.html
