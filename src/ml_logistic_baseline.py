@@ -85,14 +85,24 @@ FONT_AX    = {"fontsize": 10, "color": "#2C3E50"}
 
 def load_and_split(input_path: str):
     """
-    Load ksi_encoded.csv from Story 1 and perform 80/20 stratified split.
+    Load ksi_encoded.csv from Story 1 and perform stratified 80/20 split.
 
-    Reads the already-cleaned and encoded dataset — Story 1 has already:
-      - Imputed missing values
-      - Capped invage outliers (> 110 → NaN → median imputed)
-      - OHE-encoded categoricals
-      - Encoded target (acclass_binary)
-      - Engineered temporal features (hour, is_weekend, etc.)
+    Parameters
+    ----------
+    input_path : str
+        Path to ksi_encoded.csv (outputs/story-1/ksi_encoded.csv).
+        Must contain 'acclass_binary' column — run Story 1 first.
+
+    Returns
+    -------
+    X_train, X_test : pd.DataFrame
+        Feature matrices — 80% train, 20% test.
+    y_train, y_test : pd.Series
+        Target vectors — stratified to preserve fatal/non-fatal ratio.
+    train_idx, test_idx : list
+        Original DataFrame indices — saved to train_indices.csv / test_indices.csv.
+    cols : list
+        Feature column names used (subset of CORE_FEATURES).
     """
     df = pd.read_csv(input_path, low_memory=False)
 
