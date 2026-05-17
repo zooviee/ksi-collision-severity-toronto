@@ -53,7 +53,7 @@ def encoded_csv(tmp_path):
 # ─────────────────────────────────────────────────────────────────────────────
 # load_and_split — Test 1 of 5
 # ─────────────────────────────────────────────────────────────────────────────
-"""
+
 class TestLoadAndSplit:
 
     def test_train_size_approximately_80_pct(self, encoded_csv):
@@ -61,4 +61,8 @@ class TestLoadAndSplit:
         total     = len(X_train) + len(X_test)
         train_pct = len(X_train) / total
         assert abs(train_pct - 0.80) <= 0.02
-"""
+
+    def test_no_overlap_between_train_and_test_indices(self, encoded_csv):
+        _, _, _, _, train_idx, test_idx, _ = load_and_split(encoded_csv)
+        overlap = set(train_idx) & set(test_idx)
+        assert len(overlap) == 0
