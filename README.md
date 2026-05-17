@@ -9,12 +9,12 @@
 
 ## Team Members
 
-| Name | Student ID |
-|---|---|
-| Oluwaseyi Adebanjo Akinsanya | NF1012975 |
-| Paniebi Karis Ovuru | NF1019078 |
-| Abigia Gashahun Edossa | NF1021072 |
-| Martins Okpako Agomavroghene | NF1013669 |
+| Name | Student ID | Stories |
+|---|---|---|
+| Oluwaseyi Adebanjo Akinsanya | NF1012975 | 1, 6, 11, 12 |
+| Paniebi Karis Ovuru | NF1019078 | 4, 8, 13 |
+| Abigia Gashahun Edossa | NF1021072 | 3, 7, 10 |
+| Martins Okpako Agomavroghene | NF1013669 | 2, 5, 9, 11 |
 
 **Supervisor:** Dr. Bilal El Toufaili
 
@@ -27,19 +27,23 @@ ksi-collision-severity-toronto/
 ├── src/
 │   ├── data_preparation.py        ← Story 1
 │   ├── eda_visualizations.py      ← Story 2
-│   ├── statistical_inference.py   ← Story 3
+│   ├── hypothesis_testing.py      ← Story 3
 │   ├── logistic_regression.py     ← Story 4
 │   ├── ml_logistic_baseline.py    ← Story 6
 │   ├── ml_decision_tree_rf.py     ← Story 7
 │   ├── ml_xgboost_shap.py         ← Story 8
 │   ├── model_selection_cv.py      ← Story 9
 │   ├── geospatial_analysis.py     ← Story 10
-│   └── app.py                     ← Story 11 (Streamlit)
+|   ├── dashboard.py               ← Story 11
+│   └── app.py                     ← Story 12 (Streamlit)
 │
 ├── tests/
-│   ├── test_data_preparation.py   ← Story 1 TDD (53 tests)
-│   └── test_app_edge_cases.py     ← Story 11 edge cases (5 tests)
+│   ├── test_data_preparation.py       ← Story 1  (53 tests, TDD)
+│   ├── test_eda_visualizations.py     ← Story 2  (7 tests)
+│   ├── test_ml_logistic_baseline.py   ← Story 6  (18 tests, TDD red-green-blue)
+│   └── test_app_edge_cases.py         ← Story 12 (5 edge case tests)
 │
+├── conftest.py                    ← pytest path config (adds src/ to sys.path)
 ├── data/                          ← Raw CSV (not committed to git)
 │   └── .gitkeep
 ├── outputs/
@@ -47,7 +51,7 @@ ksi-collision-severity-toronto/
 ├── dashboard/                     ← Story 12 React dashboard
 │   ├── src/App.jsx
 │   ├── public/ksi_data.json
-│   └── …
+│   └── vercel.json
 ├── requirements.txt
 ├── requirements.lock
 └── .gitignore
@@ -58,51 +62,105 @@ ksi-collision-severity-toronto/
 ## Story Map & Dependencies
 
 ```
-Story 1  → ksi_encoded.csv
-             ↓               ↓               ↓
-           Story 2         Story 3         Story 4
-           (EDA)           (Inference)     (Logit inference)
+RAW CSV (Motor_Vehicle_Collisions_with_KSI_Data_-_4326.csv)
+    │
+    ▼
+Story 1 ──► ksi_encoded.csv
+    │
+    ├──► Story 2 (EDA)
+    ├──► Story 4 (Logistic regression — inference)
+    │
+    ▼
+Story 6 ──► train_indices.csv, test_indices.csv, logistic_baseline_model.pkl
+    │
+    ▼
+Story 7 ──► dt_model.pkl, rf_model.pkl
+    │
+    ▼
+Story 8 ──► xgb_model.pkl, shap_values.npy
+    │
+    ▼
+Story 9 ──► best_model.pkl
+    │
+    ├──► Story 11 (Streamlit app)
+    └──► Story 12 (React dashboard)
 
-Story 1 → ksi_encoded.csv
-             ↓
-           Story 6  → train_indices.csv, test_indices.csv, logistic_baseline_model.pkl
-             ↓
-           Story 7  → dt_model.pkl, rf_model.pkl
-             ↓
-           Story 8  → xgb_model.pkl, shap_values.npy
-             ↓
-           Story 9  → best_model.pkl (joblib)
-             ↓
-           Story 11 (Streamlit app)
-           Story 12 (React dashboard)
-
-Story 10 — fully independent, reads raw CSV directly
-Story 5  — Word document, no code dependencies
+Story 3  ── reads raw CSV (needs original categorical columns)
+Story 5  ── Word document, no code
+Story 10 ── reads raw CSV (needs coordinates and ward names)
 ```
 
-### Key dependency rule
-> **Stories 2–4** consume `ksi_encoded.csv` from Story 1.
-> **Stories 7–9** consume the train/test index files from Story 6.
-> Always run stories in order within each branch.
+### Input file rules — why each story reads what it reads
+
+| Story | Input | Reason |
+|---|---|---|
+| 1 | Raw CSV | Source of truth — cleans and encodes everything |
+| 2 | `ksi_encoded.csv` | Needs `acclass_binary` and OHE columns for plots |
+| 3 | Raw CSV | Chi-square tests need original columns (`light`, `rdsfcond`, `drivcond`, `traffictl`) — OHE drops these |
+| 4 | `ksi_encoded.csv` | Needs OHE dummies for VIF and GLM logit |
+| 6 | `ksi_encoded.csv` | Single source of truth for train/test split and SMOTE |
+| 7–9 | `ksi_encoded.csv` + Story 6 indices | Inherit the exact same split from Story 6 |
+| 10 | Raw CSV | Needs `latitude`, `longitude`, `stname1`, `stname2`, `wardname` |
+| 11 | `best_model.pkl` | Prediction only — no raw data needed |
 
 ---
 
 ## Story Descriptions
 
-| Story | Script | What it does |
+| Story | Script | Tasks | What it does |
+|---|---|---|---|
+| 1 | `data_preparation.py` | #1–11 | Clean, impute (incl. invage cap >110), OHE encode, engineer temporal features, encode target. **No split or SMOTE.** |
+| 2 | `eda_visualizations.py` | #12–16 | Severity distribution, categorical distributions, temporal trends, summary stats, stacked proportions |
+| 3 | `hypothesis_testing.py` | #17–22 | Chi-square H1–H4, Cramér's V, odds ratios, hypothesis summary table |
+| 4 | `logistic_regression.py` | #24–27 | Statsmodels GLM logit, VIF reduction, coefficient table, OR forest plot, plain-language interpretations |
+| 5 | `Story5_Research_Questions.docx` | — | Research question refinement, team sign-off |
+| 6 | `ml_logistic_baseline.py` | #34–37 | **80/20 stratified split**, **SMOTE** (training only), sklearn LR baseline, C tuning, ROC, confusion matrix |
+| 7 | `ml_decision_tree_rf.py` | TBD | Decision Tree + Random Forest, GridSearchCV, RandomizedSearchCV, feature importances, learning curves |
+| 8 | `ml_xgboost_shap.py` | TBD | XGBoost with Optuna tuning, SHAP beeswarm/bar/dependence plots |
+| 9 | `model_selection_cv.py` | TBD | 10-fold CV all 4 models, model selection rationale, joblib save, pipeline docs |
+| 10 | `geospatial_analysis.py` | TBD | KDE heatmap, ward choropleth (fatality rate), top 10 intersections, data recency docs |
+| 11 | `app.py` | TBD | Streamlit prediction app with SHAP explanations and colour-coded gauge |
+| 12 | `dashboard/` | TBD | React cross-filter dashboard deployed on Vercel |
+
+---
+
+## Output Naming Convention
+
+All output files follow `task_N_description.ext`:
+
+| Story | Task range | Example outputs |
 |---|---|---|
-| 1 | `data_preparation.py` | Clean data, encode variables, engineer features, validate. Outputs `ksi_encoded.csv`. **No split or SMOTE here.** |
-| 2 | `eda_visualizations.py` | Distribution plots, temporal trends, stacked bar charts |
-| 3 | `statistical_inference.py` | Chi-square tests (H1–H4), odds ratios, hypothesis summary table |
-| 4 | `logistic_regression.py` | Statsmodels logistic regression for **statistical inference** (not ML prediction) |
-| 5 | `Story5_Research_Questions.docx` | Refined research questions, team sign-off |
-| 6 | `ml_logistic_baseline.py` | **80/20 stratified split**, **SMOTE** (training only), sklearn LR baseline ML classifier |
-| 7 | `ml_decision_tree_rf.py` | Decision Tree + Random Forest, GridSearchCV, learning curves |
-| 8 | `ml_xgboost_shap.py` | XGBoost with Optuna tuning, SHAP plots |
-| 9 | `model_selection_cv.py` | 10-fold CV all 4 models, model selection, joblib save, pipeline docs |
-| 10 | `geospatial_analysis.py` | KDE heatmap, ward choropleth, top 10 intersections |
-| 11 | `app.py` | Streamlit prediction app with SHAP explanations |
-| 12 | `dashboard/` | React cross-filter dashboard (deployed on Vercel) |
+| 1 | — | `variable_catalogue.csv`, `missingness_report.csv`, `ksi_encoded.csv` |
+| 2 | #12–16 | `task_12_acclass_distribution.png`, `task_16_road_user_fatal_nonfatal_stacked.png` |
+| 3 | #17–22 | `task_17_h1_light_rdsfcond.png`, `task_22_hypothesis_results.csv` |
+| 4 | #24–27 | `task_24_logistic_model_summary.txt`, `task_26_vif_before_after.png`, `task_27_top_predictors_or_plot.png` |
+| 6 | #34–37 | `task_34_roc_curve_logistic.png`, `task_37_model_comparison_table.png` |
+| 7+ | TBD | Follow the same `task_N_` prefix convention |
+
+---
+
+## Test Coverage
+
+| Story | Test file | Tests | Approach |
+|---|---|---|---|
+| 1 | `test_data_preparation.py` | 53 | TDD-inspired, synthetic fixture, all pipeline steps covered |
+| 2 | `test_eda_visualizations.py` | 7 | Test-after, matches teammate function names |
+| 6 | `test_ml_logistic_baseline.py` | 18 | **TDD red-green-blue** — genuine RED states committed and pushed |
+| 11 | `test_app_edge_cases.py` | 5 | Edge case tests, 5 contrasting prediction scenarios |
+
+### TDD evidence for Story 6
+
+Two tests had genuine RED states with committed proof:
+
+**Test 1** (`test_train_size_approximately_80_pct`):
+- RED — `ModuleNotFoundError`: module not importable
+- GREEN — `load_and_split` implemented, test passes
+- BLUE — full parameter/return docstring added
+
+**Test 2** (`test_auc_above_random`):
+- RED — synthetic fixture had no signal, AUC = 0.37 < 0.5
+- GREEN — fixture fixed with learnable signal (`older_adult` + `hour<6`), AUC = 0.88
+- BLUE — docstring added to `_make_encoded_df` explaining the signal
 
 ---
 
@@ -110,68 +168,81 @@ Story 5  — Word document, no code dependencies
 
 ```bash
 # 1. Clone and set up
-git clone https://github.com/<org>/ksi-collision-severity-toronto.git
+git clone https://github.com/zooviee/ksi-collision-severity-toronto.git
 cd ksi-collision-severity-toronto
 python3 -m venv .venv
-source .venv/bin/activate        # Mac/Linux
+source .venv/bin/activate
 pip install -r requirements.txt
 
-# 2. Run tests
+# 2. Run all tests
 pytest tests/ -v
 
 # 3. Run stories in order
+
+# Story 1 — data preparation (run this first)
 python src/data_preparation.py \
-    --input  data/Motor_Vehicle_Collisions_with_KSI_Data_-_4326.csv \
+    --input      data/Motor_Vehicle_Collisions_with_KSI_Data_-_4326.csv \
     --output-dir outputs/story-1
 
+# Story 2 — EDA (reads ksi_encoded.csv)
 python src/eda_visualizations.py \
-    --input  data/Motor_Vehicle_Collisions_with_KSI_Data_-_4326.csv \
+    --input      outputs/story-1/ksi_encoded.csv \
     --output-dir outputs/story-2
 
-python src/statistical_inference.py \
-    --input  data/Motor_Vehicle_Collisions_with_KSI_Data_-_4326.csv \
+# Story 3 — hypothesis testing (reads raw CSV)
+python src/hypothesis_testing.py \
+    --input      data/Motor_Vehicle_Collisions_with_KSI_Data_-_4326.csv \
     --output-dir outputs/story-3
 
+# Story 4 — logistic regression inference (reads ksi_encoded.csv)
 python src/logistic_regression.py \
-    --input  data/Motor_Vehicle_Collisions_with_KSI_Data_-_4326.csv \
+    --input      outputs/story-1/ksi_encoded.csv \
     --output-dir outputs/story-4
 
-# Story 6 — creates train/test split and SMOTE (Stories 7–9 depend on this)
+# Story 6 — ML baseline (single source of truth for split + SMOTE)
 python src/ml_logistic_baseline.py \
-    --input  data/Motor_Vehicle_Collisions_with_KSI_Data_-_4326.csv \
+    --input      outputs/story-1/ksi_encoded.csv \
     --output-dir outputs/story-6
 
+# Story 7 — Decision Tree + Random Forest (depends on Story 6)
 python src/ml_decision_tree_rf.py \
-    --input       data/Motor_Vehicle_Collisions_with_KSI_Data_-_4326.csv \
+    --input       outputs/story-1/ksi_encoded.csv \
     --output-dir  outputs/story-7 \
     --indices-dir outputs/story-6 \
     --models-dir  outputs/story-6
 
+# Story 8 — XGBoost + SHAP (depends on Stories 6 and 7)
 python src/ml_xgboost_shap.py \
-    --input       data/Motor_Vehicle_Collisions_with_KSI_Data_-_4326.csv \
+    --input       outputs/story-1/ksi_encoded.csv \
     --output-dir  outputs/story-8 \
     --indices-dir outputs/story-6 \
     --models-dir  outputs/story-6 outputs/story-7
 
+# Story 9 — Model selection + CV (depends on Stories 6, 7, 8)
 python src/model_selection_cv.py \
-    --input       data/Motor_Vehicle_Collisions_with_KSI_Data_-_4326.csv \
+    --input       outputs/story-1/ksi_encoded.csv \
     --output-dir  outputs/story-9 \
     --indices-dir outputs/story-6 \
     --models-dir  outputs/story-6 outputs/story-7 outputs/story-8
 
+# Story 10 — Geospatial analysis (reads raw CSV)
 python src/geospatial_analysis.py \
     --input      data/Motor_Vehicle_Collisions_with_KSI_Data_-_4326.csv \
     --output-dir outputs/story-10
 
-# Story 11 — Streamlit app
+# Story 11 — Streamlit app (auto-discovers best_model.pkl)
 streamlit run src/app.py
+
+# Story 12 — React dashboard
+cd dashboard && npm install && npm run dev
+# Deployed at: https://ksi-dashboard.vercel.app
 ```
 
 ---
 
 ## Story 1 Outputs
 
-Story 1 produces exactly three files:
+Story 1 produces exactly three files — no more:
 
 | File | Description |
 |---|---|
@@ -179,8 +250,34 @@ Story 1 produces exactly three files:
 | `missingness_report.csv` | Full-column missingness audit (count + %) |
 | `ksi_encoded.csv` | Cleaned, encoded dataset — all 20,439 KSI records |
 
-**Story 1 does NOT produce:** `X_train_smote.csv`, `X_test.csv`, `y_train_smote.csv`,
-`y_test.csv` — these are created in Story 6 where the ML pipeline begins.
+**Story 1 does NOT produce split or SMOTE files.**
+Train/test split and SMOTE live exclusively in Story 6.
+
+---
+
+## Story 6 Outputs
+
+Story 6 is the single source of truth for the ML train/test split:
+
+| File | Used by |
+|---|---|
+| `train_indices.csv` | Stories 7, 8, 9 via `--indices-dir` |
+| `test_indices.csv` | Stories 7, 8, 9 via `--indices-dir` |
+| `logistic_baseline_model.pkl` | Stories 7, 8 via `--models-dir` |
+| `task_34_logistic_baseline_metrics.csv` | Story 9 comparison table |
+| `model_comparison_table.csv` | Stories 7, 8, 9 append rows to this |
+
+---
+
+## Known Limitations
+
+| Limitation | Where documented |
+|---|---|
+| 2024–2026 data underrepresented (police reporting lag 6–18 months) | Story 10 `data_recency_limitation.txt` |
+| `aggressive` and `distracted` flags have negative SHAP — reporting bias artefact (flags more common in non-fatal collisions where driver survives to be interviewed) | Story 8 SHAP plots, Story 4 coefficient table |
+| `invage` outliers (years recorded as age, e.g. 2023) — 2 records capped at 110 in Story 1 | Story 1 `impute_and_flag()` |
+| XGBoost trained on Toronto KSI data only — not validated for other cities or jurisdictions | Story 9 pipeline docs |
+| Streamlit app not for operational use — probabilistic population-level estimates only | Story 11 disclaimer |
 
 ---
 
@@ -190,8 +287,9 @@ City of Toronto Open Data Portal —
 [Motor Vehicle Collisions with KSI Data](https://open.toronto.ca/dataset/motor-vehicle-collisions-involving-killed-or-seriously-injured-persons/)
 
 - Timeframe: 2006–2026 (daily refresh)
-- Records: 20,439 (after removing 18 Property Damage Only records)
+- Records after cleaning: 20,439 (dropped 18 Property Damage Only)
 - Fatal: 2,886 (14.1%) | Non-Fatal: 17,553 (85.9%)
+- Imbalance ratio: 6.08:1 (handled by SMOTE in Story 6)
 
 ---
 
@@ -199,12 +297,17 @@ City of Toronto Open Data Portal —
 
 ```
 main
-└── feature/story-1-data-preparation   ← Oluwaseyi
-└── feature/story-2-eda                ← Paniebi
-└── feature/story-3-inference          ← Abigia
-└── feature/story-4-logistic           ← Martins
-└── feature/story-6-ml-baseline        ← (assigned)
-...
+└── feature/story-1-data-preparation      ← Oluwaseyi  ✓ merged
+└── feature/story-2-eda                   ← Paniebi    (in review)
+└── feature/story-3-hypothesis-testing    ← Abigia     (in progress)
+└── feature/story-4-logistic              ← Martins    (in progress)
+└── feature/story-6-ml-baseline           ← Oluwaseyi  (in review)
+└── feature/story-7-dt-rf                 ← Martins    (pending)
+└── feature/story-8-xgboost-shap          ← Martins    (pending)
+└── feature/story-9-model-selection       ← Oluwaseyi  (pending)
+└── feature/story-10-geospatial           ← Abigia     (pending)
+└── feature/story-11-streamlit-app        ← Oluwaseyi  (pending)
+└── feature/story-12-dashboard            ← Oluwaseyi  (pending)
 ```
 
 Each story gets its own feature branch. Open a Pull Request into `main`
@@ -214,300 +317,145 @@ and require at least 1 team-member review before merging.
 
 ## Git Workflow — Step by Step
 
-Every team member follows this exact sequence for their story.
-The example below uses Story 2 — replace the story number and description for your own.
-
 ---
 
-### Step 1 — Get the latest `main` before you start
-
-Always start from an up-to-date `main` so your branch does not fall behind.
+### Step 1 — Get the latest `main`
 
 ```bash
 git checkout main
 git pull origin main
 ```
-
----
 
 ### Step 2 — Create your feature branch
 
-Branch names follow the pattern: `feature/story-N-short-description`
-
 ```bash
-git checkout -b feature/story-2-eda-visualizations
+git checkout -b feature/story-N-short-description
 ```
-
-You are now on your own branch. Any commits you make here do not
-affect `main` or your teammates' branches.
-
----
 
 ### Step 3 — Do your work
 
-Write your code, run the pipeline, check the outputs:
+Run the pipeline and tests before committing:
 
 ```bash
-python src/eda_visualizations.py \
-    --input  data/Motor_Vehicle_Collisions_with_KSI_Data_-_4326.csv \
-    --output-dir outputs/story-2
-```
-
-Run any tests relevant to your story:
-
-```bash
+python src/your_script.py --input ... --output-dir outputs/story-N
 pytest tests/ -v
 ```
 
----
-
 ### Step 4 — Stage only your story's files
 
-**Do not stage the entire project.** Only add files that belong to your story.
-Use `git status` first to see what has changed:
-
 ```bash
 git status
+git add src/your_script.py
+git add tests/test_your_script.py
+git add README.md   # only if you updated it
 ```
 
-Then add only your files:
-
-```bash
-# Your script
-git add src/eda_visualizations.py
-
-# Your test file (if you wrote one)
-git add tests/test_eda_visualizations.py
-
-# README or requirements if you changed them
-git add README.md
-```
-
-**Never add:**
-```bash
-# DO NOT add these — they are generated and excluded by .gitignore
-git add outputs/           # ← generated artefacts
-git add data/              # ← raw dataset (too large, private)
-git add .venv/             # ← virtual environment
-```
-
-Confirm exactly what you are about to commit:
-
-```bash
-git status
-git diff --staged
-```
-
----
+**Never add:** `outputs/`, `data/`, `.venv/`
 
 ### Step 5 — Commit with a detailed message
 
-A good commit message has three parts:
-1. **Subject line** — short summary using the `feat(story-N):` prefix
-2. **Blank line**
-3. **Body** — bullet points describing what was done, why, and key results
-
 ```bash
-git commit -m "feat(story-2): EDA visualizations pipeline
+git commit -m "feat(story-N): short summary
 
-- Distribution plots for all 24 key variables (Fig 1–5)
-- Temporal trend: fatal collisions 2006–2023 with COVID dip annotated (Fig 6)
-- Stacked bar charts: fatality by lighting, road surface, road user (Fig 7–9)
-- Hourly fatality rate bar chart — peak at 05:00 (26.3% fatal rate) (Fig 10)
-- Seasonal breakdown: Summer highest at 15.6% fatality rate (Fig 11)
-- Data recency note: 2024–2026 excluded from trend due to police reporting lag
-- All figures saved to outputs/story-2/ as PNG (150 dpi)
-- Script accepts --input and --output-dir CLI arguments
-- Runs in ~45 seconds on full 20,439-record dataset"
+- What was done
+- Key result or metric
+- Output files produced"
 ```
 
-**Commit message conventions used in this project:**
+**Commit prefixes:**
 
 | Prefix | When to use |
 |---|---|
-| `feat(story-N):` | New story pipeline or feature |
-| `fix(story-N):` | Bug fix in an existing script |
-| `test(story-N):` | Adding or fixing test files |
+| `feat(story-N):` | New pipeline or feature |
+| `fix(story-N):` | Bug fix |
+| `test(story-N): RED` | Failing test — written before code exists |
+| `test(story-N): GREEN` | Code written to pass the failing test |
+| `refactor(story-N): BLUE` | Refactor — all tests still passing |
 | `docs:` | README or documentation only |
-| `refactor(story-N):` | Code restructure, no behaviour change |
+| `chore:` | Config, gitignore, tooling |
 
----
-
-### Step 6 — Push your branch to GitHub
-
-The first time you push a new branch, use `-u` to set the upstream:
+### Step 6 — Push
 
 ```bash
-git push -u origin feature/story-2-eda-visualizations
-```
+git push -u origin feature/story-N-short-description  # first push
+git push                                                # subsequent pushes
 
-On subsequent pushes (after more commits on the same branch):
-
-```bash
+# If rejected
+git pull origin feature/story-N-short-description --rebase
 git push
 ```
 
-If your push is rejected because the remote has changes you don't have:
+### Step 7 — Open a Pull Request
 
-```bash
-git pull origin feature/story-2-eda-visualizations --rebase
-git push
+1. Go to `https://github.com/zooviee/ksi-collision-severity-toronto`
+2. Click **Compare & pull request**
+3. Use this template:
+
+```
+## Summary
+One sentence describing what this story implements.
+
+## What this PR includes
+- `src/script_name.py`
+- `tests/test_script_name.py`
+
+## Output files (task_N naming)
+- task_N_filename.png
+- task_N_filename.csv
+
+## How to run
+python src/script_name.py \
+    --input  ... \
+    --output-dir outputs/story-N
+
+## Tests
+pytest tests/test_script_name.py -v
+# Expected: N passed
+
+## Story dependency
+Depends on: Story X (which file)
+Required by: Story Y
+
+## Checklist
+- [ ] Script runs on full dataset without errors
+- [ ] All task_N output files saved to outputs/story-N/
+- [ ] All tests passing
+- [ ] No outputs/ or data/ files committed
+- [ ] README updated if run commands changed
 ```
 
----
-
-### Step 7 — Open a Pull Request on GitHub
-
-1. Go to the repository on GitHub:
-   `https://github.com/zooviee/ksi-collision-severity-toronto`
-
-2. You will see a yellow banner:
-   **"feature/story-2-eda-visualizations had recent pushes — Compare & pull request"**
-   Click it.
-
-3. Fill in the Pull Request form:
-
-   **Base branch:** `main`
-   **Compare branch:** `feature/story-2-eda-visualizations`
-
-   **Title:**
-   ```
-   Story 2 — EDA Visualizations Pipeline
-   ```
-
-   **Description** (paste this template and fill it in):
-   ```
-   ## Summary
-   Implements Story 2: exploratory data analysis visualizations for the
-   KSI collision severity dataset.
-
-   ## What this PR includes
-   - `src/eda_visualizations.py` — full EDA pipeline script
-   - `tests/test_eda_visualizations.py` — N unit tests (all passing)
-
-   ## Figures produced
-   - Fig 1–5: variable distributions
-   - Fig 6: fatal collision trend 2006–2023
-   - Fig 7–9: fatality by lighting, surface, road user
-   - Fig 10: hourly fatality rate
-   - Fig 11: seasonal breakdown
-
-   ## Key findings
-   - Summer peak: 15.6% fatality rate (highest season)
-   - 05:00 hour: 26.3% fatality rate (highest hour)
-   - Data-lag note documented for 2024–2026
-
-   ## How to run
-   \```bash
-   python src/eda_visualizations.py \
-       --input  data/Motor_Vehicle_Collisions_with_KSI_Data_-_4326.csv \
-       --output-dir outputs/story-2
-   \```
-
-   ## Tests
-   \```bash
-   pytest tests/test_eda_visualizations.py -v
-   # Expected: N passed
-   \```
-
-   ## Story dependency
-   Depends on: Story 1 (`ksi_encoded.csv`)
-   Required by: None (EDA is standalone)
-
-   ## Checklist
-   - [ ] Script runs without errors on full dataset
-   - [ ] All figures saved to outputs/story-2/
-   - [ ] Tests passing
-   - [ ] No data files committed
-   - [ ] No outputs/ folder committed
-   ```
-
-4. On the right panel:
-   - **Reviewers** → assign at least 1 teammate
-   - **Assignees** → assign yourself
-   - **Labels** → select `story-2` (create the label if it does not exist)
-
-5. Click **Create pull request**
-
----
+4. Assign at least 1 reviewer → **Create pull request**
 
 ### Step 8 — Respond to review feedback
 
-Your reviewer may leave comments. To update your PR:
-
 ```bash
-# Make the requested changes locally
-# Then stage and commit
-git add src/eda_visualizations.py
-git commit -m "fix(story-2): address PR review — fix axis labels on Fig 6"
-
-# Push again — the PR updates automatically
+git add src/your_script.py
+git commit -m "fix(story-N): address PR review — description"
 git push
 ```
 
-Leave a reply on each comment when you have addressed it.
-When the reviewer is satisfied they will click **Approve**.
+### Step 9 — Merge into main
 
----
-
-### Step 9 — Merge into main (after approval)
-
-Once you have at least 1 approval:
-
-1. On the PR page, click **Squash and merge**
-   (this keeps `main` history clean — one commit per story)
-
-2. Confirm the merge commit message — keep the story prefix:
-   ```
-   feat(story-2): EDA visualizations pipeline (#PR_NUMBER)
-   ```
-
-3. Click **Confirm squash and merge**
-
-4. Delete the feature branch when prompted (keeps the repo tidy)
-
-5. Pull the updated `main` locally:
-   ```bash
-   git checkout main
-   git pull origin main
-   ```
-
----
-
-### Quick reference — commands in order
+1. Click **Squash and merge**
+2. Keep the story prefix in the commit message
+3. Delete the feature branch
+4. Pull locally:
 
 ```bash
-# 1. Start fresh from main
-git checkout main
-git pull origin main
+git checkout main && git pull origin main
+git branch -d feature/story-N-short-description
+```
 
-# 2. Create your branch
+### Quick reference
+
+```bash
+git checkout main && git pull origin main
 git checkout -b feature/story-N-short-description
-
-# 3. Do your work, then check what changed
-git status
-git diff --staged
-
-# 4. Stage only your files
-git add src/your_script.py
-git add tests/test_your_script.py
-
-# 5. Commit with a detailed message
-git commit -m "feat(story-N): short summary
-
-- Detail 1
-- Detail 2
-- Key result or metric"
-
-# 6. Push
+# work, test
+git add src/script.py tests/test_script.py
+git commit -m "feat(story-N): summary"
 git push -u origin feature/story-N-short-description
-
-# 7. Go to GitHub → Compare & pull request → fill in the template → assign reviewer
-
-# 8. After approval → Squash and merge on GitHub
-
-# 9. Clean up locally
-git checkout main
-git pull origin main
+# Open PR → assign reviewer → squash and merge
+git checkout main && git pull origin main
 git branch -d feature/story-N-short-description
 ```
