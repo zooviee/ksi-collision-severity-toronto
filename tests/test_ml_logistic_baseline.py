@@ -66,3 +66,9 @@ class TestLoadAndSplit:
         _, _, _, _, train_idx, test_idx, _ = load_and_split(encoded_csv)
         overlap = set(train_idx) & set(test_idx)
         assert len(overlap) == 0
+
+    def test_stratification_preserves_fatal_rate(self, encoded_csv):
+        _, _, y_train, y_test, _, _, _ = load_and_split(encoded_csv)
+        train_rate = y_train.mean()
+        test_rate  = y_test.mean()
+        assert abs(train_rate - test_rate) < 0.01
