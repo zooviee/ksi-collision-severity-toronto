@@ -44,16 +44,31 @@ from ml_logistic_baseline import (
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _make_encoded_df(n: int = 500) -> pd.DataFrame:
+    """
+    Synthetic fixture with a learnable signal so the model beats random.
+    older_adult=1 and hour < 6 increase fatal probability — model can learn this.
+    """
     rng = np.random.default_rng(42)
-    n_fatal     = max(30, n // 5)
-    n_non_fatal = n - n_fatal
-    target = np.array([1] * n_fatal + [0] * n_non_fatal)
-    rng.shuffle(target)
+
     df = pd.DataFrame({f: rng.integers(0, 2, size=n).astype(float)
                        for f in CORE_FEATURES})
-    df["invage"]         = rng.uniform(18, 80, size=n)
-    df["hour"]           = rng.integers(0, 24, size=n).astype(float)
-    df["acclass_binary"] = target
+    df["invage"] = rng.uniform(18, 80, size=n)
+    df["hour"]   = rng.integers(0, 24, size=n).astype(float)
+
+    # Add learnable signal: older_adult and early hours predict fatality
+    signal = (
+        (df["older_adult"] == 1).astype(float) * 0.6 +
+        (df["hour"] < 6).astype(float)          * 0.4
+    )
+    prob_fatal = (signal - signal.min()) / (signal.max() - signal.min() + 1e-9)
+    df["acclass_binary"] = (rng.random(n) < prob_fatal).astype(int)
+
+    # Ensure both classes are present
+    if df["acclass_binary"].sum() < 20:
+        df.loc[:20, "acclass_binary"] = 1
+    if (df["acclass_binary"] == 0).sum() < 20:
+        df.loc[:20, "acclass_binary"] = 0
+
     return df
 
 
