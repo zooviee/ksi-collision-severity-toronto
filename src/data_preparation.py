@@ -222,6 +222,15 @@ def impute_and_flag(df: pd.DataFrame) -> pd.DataFrame:
                 logging.info("Mode-imputed '%s': %d nulls → '%s'", col, n_before, mode_val)
 
     if "invage" in df.columns:
+        # Cap outliers first — years recorded as ages (e.g. 2023) skew statistics
+        n_outliers = (df["invage"] > 110).sum()
+        if n_outliers > 0:
+            df.loc[df["invage"] > 110, "invage"] = np.nan
+            logging.warning(
+                "Capped %d invage values > 110 to NaN (likely year recorded as age).",
+                n_outliers
+            )
+        # Then median-impute any nulls (including newly capped ones)
         n_before = df["invage"].isna().sum()
         if n_before > 0:
             median_age = df["invage"].median()

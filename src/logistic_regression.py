@@ -1,454 +1,642 @@
 """
-Story 4: Quantify Predictor Effects via Binary Logistic Regression
+Story 4 – Logistic Regression + VIF Analysis
+Factors Affecting Traffic Collision Severity in Toronto
+Group 5 | DAMO-699-5
 
-Tasks:
-#24 Fit binary logistic regression using key predictors on imbalanced data.
-#25 Extract coefficient table: Predictor, Coef, Std Err, z, p-value, OR, 95% CI.
-#26 Check multicollinearity using VIF and resolve VIF > 5.
-#27 Interpret top 5 significant predictors in plain language.
+Steps
+─────
+1.  Build feature matrix — imbalanced (no SMOTE) for interpretable coefficients
+2.  First-pass VIF on raw 91-feature matrix — document inflation
+3.  Resolve multicollinearity:
+      • Use a curated 28-feature core set (one dummy per OHE group, drop reference)
+      • Drop lat/lon, redundant temporal, cyclist (collinear with impactype)
+4.  Second-pass VIF on core matrix — confirm all VIF < 5
+5.  Fit statsmodels Logit (newton solver) on imbalanced training split
+6.  Extract coefficient table: Predictor | Coef | SE | z | p | OR | 95% CI
+7.  Highlight significant predictors (p < 0.05)
+8.  Interpret top 5 in plain language
+9.  Produce figures and CSVs
 
-Input:
-    outputs/story-1/ksi_encoded.csv
-
-Output:
-    outputs/story-4/
+Usage:
+    python src/logistic_regression.py \
+        --input  data/Motor_Vehicle_Collisions_with_KSI_Data_-_4326.csv \
+        --output outputs/
 """
 
 import argparse
+import logging
+import warnings
 from pathlib import Path
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 import numpy as np
 import pandas as pd
 import statsmodels.api as sm
+from sklearn.model_selection import train_test_split
 from statsmodels.stats.outliers_influence import variance_inflation_factor
 
+warnings.filterwarnings("ignore")
+logging.disable(logging.WARNING)
 
-# =========================================================
-# Load data
-# =========================================================
+import sys
+sys.path.insert(0, str(Path(__file__).parent))
+from data_preparation import (
+    load_dataset, impute_and_flag, engineer_temporal,
+    encode_target, encode_categoricals,
+)
 
-def load_data(input_path):
-    input_path = Path(input_path)
+# ── Palette ───────────────────────────────────────────────────────────────────
+C_SIG      = "#C0392B"
+C_INSIG    = "#BDC3C7"
+C_OR_LOW   = "#2980B9"
+C_ACCENT   = "#E67E22"
+C_BG       = "#F8F9FA"
+C_GRID     = "#DEE2E6"
+C_GREEN    = "#27AE60"
+FONT_TITLE = {"fontsize": 13, "fontweight": "bold", "color": "#1A1A2E"}
+FONT_AX    = {"fontsize": 10, "color": "#2C3E50"}
+ALPHA      = 0.05
 
-    if not input_path.exists():
-        raise FileNotFoundError(f"Input file not found: {input_path}")
+# ── Core feature set (28 predictors) ─────────────────────────────────────────
+# Reference categories: light=Daylight, rdsfcond=Dry, traffictl=No Control,
+#                       road_class=Major Arterial, accloc=At Intersection,
+#                       impactype=Angle
+CORE_FEATURES = [
+    # Demographics
+    "invage", "older_adult", "school_child",
+    # Road users
+    "pedestrian", "motorcyclist",
+    # Behaviour
+    "aggressive", "distracted", "red_light",
+    # Temporal
+    "hour", "is_weekend", "year",
+    # Environmental (ref = Daylight / Dry)
+    "light_Dark", "light_Dark with Artificial Lighting", "light_Dusk",
+    "rdsfcond_Wet", "rdsfcond_Ice", "rdsfcond_Loose Snow",
+    # Infrastructure (ref = No Control / Major Arterial / At Intersection)
+    "traffictl_Traffic Signal", "traffictl_Stop Sign",
+    "road_class_Expressway", "road_class_Local", "road_class_Minor Arterial",
+    "accloc_Non-Intersection", "accloc_Intersection-Related",
+    # Impact type (ref = Angle)
+    "impactype_Pedestrian Collision(internal code)",
+    "impactype_Cyclist Collision", "impactype_Rear End",
+    "impactype_Turning Movement",
+]
 
-    df = pd.read_csv(input_path, low_memory=False)
-
-    print("Dataset loaded successfully.")
-    print(f"Shape: {df.shape[0]} rows x {df.shape[1]} columns")
-
-    if "acclass_binary" not in df.columns:
-        raise ValueError("acclass_binary not found. Run Story 1 first.")
-
-    print("\nTarget distribution:")
-    print(df["acclass_binary"].value_counts())
-
-    return df
-
-
-# =========================================================
-# Task #24: Prepare predictors
-# =========================================================
-
-def drop_one_reference_category(X, prefix):
-    """
-    Drop one one-hot encoded category per variable group
-    to avoid perfect multicollinearity.
-    """
-    cols = [col for col in X.columns if col.startswith(prefix + "_")]
-
-    if len(cols) > 1:
-        reference_col = sorted(cols)[0]
-        X = X.drop(columns=[reference_col])
-        print(f"Dropped reference category for {prefix}: {reference_col}")
-
-    return X
-
-
-def prepare_predictors(df):
-    """
-    Prepare key predictors for logistic regression.
-
-    Important:
-    - We remove injury and injury_encoded because they are leakage.
-    - We remove acclass/fatal columns because they directly reveal the target.
-    - We use Story 1 encoded predictors.
-    """
-
-    y = df["acclass_binary"].astype(int)
-
-    # Keep numeric columns only because Story 1 already encoded the main categorical predictors.
-    X = df.select_dtypes(include=[np.number]).copy()
-
-    # Remove direct target and leakage columns.
-    leakage_keywords = [
-        "acclass",
-        "fatal",
-        "injury",
-    ]
-
-    leakage_cols = [
-        col for col in X.columns
-        if any(keyword in col.lower() for keyword in leakage_keywords)
-    ]
-
-    # Remove ID-style columns.
-    id_cols = [
-        "_id",
-        "collision_id",
-    ]
-
-    X = X.drop(columns=leakage_cols + id_cols, errors="ignore")
-
-    # Keep key predictor families only.
-    key_base_predictors = [
-        "per_inv",
-        "invage",
-        "aggressive",
-        "distracted",
-        "pedestrian",
-        "cyclist",
-        "motorcyclist",
-        "red_light",
-        "older_adult",
-        "school_child",
-        "heavy_truck",
-        "drivcond_missing",
-        "aggressive_missing",
-        "distracted_missing",
-        "year",
-        "month",
-        "hour",
-        "is_weekend",
-    ]
-
-    key_prefixes = [
-        "light_",
-        "rdsfcond_",
-        "traffictl_",
-        "road_class_",
-        "accloc_",
-        "impactype_",
-    ]
-
-    keep_cols = []
-
-    for col in key_base_predictors:
-        if col in X.columns:
-            keep_cols.append(col)
-
-    for col in X.columns:
-        if any(col.startswith(prefix) for prefix in key_prefixes):
-            keep_cols.append(col)
-
-    keep_cols = sorted(set(keep_cols))
-
-    X = X[keep_cols].copy()
-
-    # Drop one reference category per one-hot group.
-    for prefix in ["light", "rdsfcond", "traffictl", "road_class", "accloc", "impactype"]:
-        X = drop_one_reference_category(X, prefix)
-
-    # Clean missing or infinite values.
-    X = X.replace([np.inf, -np.inf], np.nan)
-    X = X.fillna(X.median(numeric_only=True))
-
-    # Remove columns with no variation.
-    constant_cols = [
-        col for col in X.columns
-        if X[col].nunique(dropna=True) <= 1
-    ]
-
-    X = X.drop(columns=constant_cols, errors="ignore")
-
-    print("\nTask #24 predictor preparation complete.")
-    print(f"Predictors before VIF check: {X.shape[1]}")
-
-    print("\nPredictor columns used:")
-    for col in X.columns:
-        print(f"- {col}")
-
-    return X, y
+# ── All raw features (for first-pass VIF) ────────────────────────────────────
+BASE_DROP = {
+    "_id", "collision_id", "stname1", "stname2", "stname3",
+    "geometry", "acclass", "acclass_binary", "accdate",
+    "day_of_week_name", "month_name", "season",
+    "injury", "drivact", "drivcond", "road_user",
+    "wardname", "neighbourhood", "division",
+    "pedact", "pedcond", "pedtype", "cyclistype", "cycact", "cyccond",
+    "manoeuvre", "safequip", "vehtype", "initdir",
+    "visible", "failtorem", "fatal_no", "per_inv", "veh_no", "per_no",
+    "drivcond_missing", "aggressive_missing", "distracted_missing",
+}
 
 
-# =========================================================
-# Task #26: VIF
-# =========================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# Data pipeline
+# ─────────────────────────────────────────────────────────────────────────────
 
-def calculate_vif(X):
-    """
-    Calculate Variance Inflation Factor for each predictor.
-    """
-    X_const = sm.add_constant(X, has_constant="add")
+def build_matrices(input_path: str):
+    df = load_dataset(input_path)
+    df = impute_and_flag(df)
+    df = engineer_temporal(df)
+    df = encode_target(df)
+    df = encode_categoricals(df)
 
+    # Raw feature set (91 cols) — for VIF comparison only
+    raw_cols = [c for c in df.columns
+                if c not in BASE_DROP
+                and pd.api.types.is_numeric_dtype(df[c])]
+    X_raw = df[raw_cols].fillna(0)
+
+    # Core feature set (28 cols) — for model
+    # Remove persistent high-VIF cols: year collinear with hour/trend; pedestrian collinear with impactype_Pedestrian
+    FINAL_DROP_VIF = ["year", "pedestrian", "impactype_Pedestrian Collision(internal code)"]
+    core_cols = [c for c in CORE_FEATURES if c in df.columns and c not in FINAL_DROP_VIF]
+    X_core = df[core_cols].fillna(0)
+
+    y = df["acclass_binary"]
+
+    # NOTE: This split is for STATISTICAL INFERENCE only (statsmodels Logit).
+    # It uses the same seed and ratio as Story 6 but is independent —
+    # no split indices are saved here. The ML train/test split and SMOTE
+    # that feed Stories 6-9 live exclusively in ml_logistic_baseline.py.
+    X_train_raw,  X_test_raw,  y_train, y_test = train_test_split(
+        X_raw, y, test_size=0.2, stratify=y, random_state=42)
+    X_train_core, X_test_core, _,       _      = train_test_split(
+        X_core, y, test_size=0.2, stratify=y, random_state=42)
+
+    return (X_train_raw, X_train_core, X_test_core,
+            y_train, y_test, raw_cols, core_cols)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VIF
+# ─────────────────────────────────────────────────────────────────────────────
+
+def compute_vif(X: pd.DataFrame) -> pd.DataFrame:
     rows = []
-
-    for i, col in enumerate(X_const.columns):
-        if col == "const":
-            continue
-
+    X_vals = X.values.astype(float)
+    for i, col in enumerate(X.columns):
         try:
-            vif = variance_inflation_factor(X_const.values, i)
+            vif = variance_inflation_factor(X_vals, i)
         except Exception:
-            vif = np.inf
-
-        rows.append({
-            "Predictor": col,
-            "VIF": vif,
-        })
-
-    return pd.DataFrame(rows).sort_values("VIF", ascending=False)
+            vif = np.nan
+        rows.append({"feature": col, "VIF": round(float(vif), 3)})
+    return (pd.DataFrame(rows)
+              .sort_values("VIF", ascending=False)
+              .reset_index(drop=True))
 
 
-def reduce_multicollinearity(X, threshold=5.0):
-    """
-    Drop predictors one by one until all VIF values are <= threshold.
-    """
-    X_reduced = X.copy()
-    dropped = []
+# ─────────────────────────────────────────────────────────────────────────────
+# Logistic regression
+# ─────────────────────────────────────────────────────────────────────────────
 
-    while True:
-        vif_df = calculate_vif(X_reduced)
-
-        if vif_df.empty:
-            break
-
-        max_vif = vif_df.iloc[0]["VIF"]
-        max_col = vif_df.iloc[0]["Predictor"]
-
-        if max_vif <= threshold:
-            break
-
-        print(f"Dropping high-VIF predictor: {max_col} | VIF={max_vif:.2f}")
-
-        dropped.append({
-            "Dropped Predictor": max_col,
-            "VIF": max_vif,
-            "Reason": f"VIF greater than {threshold}",
-        })
-
-        X_reduced = X_reduced.drop(columns=[max_col])
-
-        if X_reduced.shape[1] <= 1:
-            break
-
-    final_vif = calculate_vif(X_reduced)
-    dropped_vif = pd.DataFrame(dropped)
-
-    print("\nTask #26 complete: VIF check finished.")
-    print(f"Predictors after VIF check: {X_reduced.shape[1]}")
-
-    return X_reduced, final_vif, dropped_vif
-
-
-# =========================================================
-# Task #24: Fit model
-# =========================================================
-
-def fit_logistic_model(X, y):
-    """
-    Fit binary logistic regression using GLM Binomial.
-
-    This is logistic regression, but it is more stable than statsmodels Logit
-    for this dataset.
-    """
-
-    X_const = sm.add_constant(X, has_constant="add")
-
-    model = sm.GLM(y, X_const, family=sm.families.Binomial())
-    result = model.fit(maxiter=300)
-
-    print("\nTask #24 complete: Binary logistic regression fitted.")
-
+def fit_logit(X_train: pd.DataFrame, y_train: pd.Series):
+    X_const = sm.add_constant(X_train, has_constant="add")
+    model   = sm.Logit(y_train, X_const)
+    result  = model.fit(method="newton", maxiter=200, disp=False)
     return result
 
 
-# =========================================================
-# Task #25: Coefficient table
-# =========================================================
+def extract_coef_table(result) -> pd.DataFrame:
+    params   = result.params
+    bse      = result.bse
+    tvalues  = result.tvalues
+    pvalues  = result.pvalues
+    conf_int = result.conf_int()
 
-def safe_exp(values):
-    """
-    Safely exponentiate values for odds ratios and confidence intervals.
+    rows = []
+    for pred in params.index:
+        if pred == "const":
+            continue
+        coef  = params[pred]
+        se    = bse[pred]
+        z     = tvalues[pred]
+        p     = pvalues[pred]
+        ci_lo = conf_int.loc[pred, 0]
+        ci_hi = conf_int.loc[pred, 1]
+        rows.append({
+            "Predictor":    pred,
+            "Coefficient":  round(coef, 4),
+            "Std Error":    round(se, 4),
+            "z-statistic":  round(z, 4),
+            "p-value":      p,
+            "OR":           round(np.exp(coef), 4),
+            "OR_CI_low":    round(np.exp(ci_lo), 4),
+            "OR_CI_high":   round(np.exp(ci_hi), 4),
+            "Significant":  bool(p < ALPHA),
+        })
 
-    Clipping prevents overflow warnings when coefficients or confidence
-    interval bounds are extremely large.
-    """
-    return np.exp(np.clip(values, -20, 20))
-
-
-def build_coefficient_table(result):
-    """
-    Build coefficient table:
-    Predictor, Coefficient, Std Error, z, p-value, OR, 95% CI.
-    """
-    params = result.params
-    conf = result.conf_int()
-
-    coef_table = pd.DataFrame({
-        "Predictor": params.index,
-        "Coefficient": params.values,
-        "Std Error": result.bse.values,
-        "z": result.tvalues.values,
-        "p-value": result.pvalues.values,
-        "OR": safe_exp(params.values),
-        "95% CI Lower": safe_exp(conf[0].values),
-        "95% CI Upper": safe_exp(conf[1].values),
-    })
-
-    coef_table = coef_table[coef_table["Predictor"] != "const"].copy()
-    coef_table["Significant p<0.05"] = coef_table["p-value"] < 0.05
-    coef_table = coef_table.sort_values("p-value", ascending=True)
-
-    print("\nTask #25 complete: Coefficient table created.")
-
-    return coef_table
+    return (pd.DataFrame(rows)
+              .sort_values("p-value")
+              .reset_index(drop=True))
 
 
-# =========================================================
-# Task #27: Interpretation
-# =========================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# Plain-language interpretations
+# ─────────────────────────────────────────────────────────────────────────────
 
-def interpret_top_predictors(coef_table):
-    """
-    Interpret top 5 statistically significant predictors in plain language.
-    """
-    significant = coef_table[
-        (coef_table["Significant p<0.05"] == True)
-        & (coef_table["OR"].replace([np.inf, -np.inf], np.nan).notna())
-    ].copy()
+PLAIN_LABELS = {
+    "invage":        "Each additional year of age",
+    "older_adult":   "Involvement of an older adult (65+)",
+    "school_child":  "Involvement of a school-age child",
+    "pedestrian":    "Pedestrian involvement",
+    "motorcyclist":  "Motorcyclist involvement",
+    "aggressive":    "Aggressive driving flag",
+    "distracted":    "Distracted driving flag",
+    "red_light":     "Red-light violation",
+    "hour":          "Each additional hour of day (0–23)",
+    "is_weekend":    "Weekend collision (vs. weekday)",
+    "year":          "Each additional year (trend)",
+    "light_Dark":                              "Dark conditions (vs. Daylight)",
+    "light_Dark with Artificial Lighting":     "Dark with artificial light (vs. Daylight)",
+    "light_Dusk":                              "Dusk conditions (vs. Daylight)",
+    "rdsfcond_Wet":                            "Wet road surface (vs. Dry)",
+    "rdsfcond_Ice":                            "Icy road surface (vs. Dry)",
+    "rdsfcond_Loose Snow":                     "Loose snow on road (vs. Dry)",
+    "traffictl_Traffic Signal":                "Traffic signal control (vs. No Control)",
+    "traffictl_Stop Sign":                     "Stop sign control (vs. No Control)",
+    "road_class_Expressway":                   "Expressway (vs. Major Arterial)",
+    "road_class_Local":                        "Local road (vs. Major Arterial)",
+    "road_class_Minor Arterial":               "Minor arterial (vs. Major Arterial)",
+    "accloc_Non-Intersection":                 "Non-intersection location (vs. At Intersection)",
+    "accloc_Intersection-Related":             "Intersection-related location (vs. At Intersection)",
+    "impactype_Pedestrian Collision(internal code)": "Pedestrian collision type (vs. Angle)",
+    "impactype_Cyclist Collision":             "Cyclist collision type (vs. Angle)",
+    "impactype_Rear End":                      "Rear-end collision (vs. Angle)",
+    "impactype_Turning Movement":              "Turning-movement collision (vs. Angle)",
+}
 
-    significant = significant.sort_values("p-value").head(5)
 
-    lines = []
-    lines.append("Task #27: Top 5 Significant Predictors Interpretation")
-    lines.append("=" * 60)
-    lines.append("")
+def plain_language_interpretations(tbl: pd.DataFrame) -> list[dict]:
+    sig = tbl[tbl["Significant"]].copy()
+    sig = sig[(sig["OR"] > 0.05) & (sig["OR"] < 100)]
+    sig["or_distance"] = abs(np.log(sig["OR"]))
+    top5 = sig.nlargest(5, "or_distance").reset_index(drop=True)
 
-    if significant.empty:
-        lines.append(
-            "No predictors were statistically significant at p < 0.05 "
-            "after VIF-based multicollinearity handling."
-        )
-        return "\n".join(lines)
+    interpretations = []
+    for rank, row in top5.iterrows():
+        pred    = row["Predictor"]
+        OR      = row["OR"]
+        ci_lo   = row["OR_CI_low"]
+        ci_hi   = row["OR_CI_high"]
+        p       = row["p-value"]
+        p_str   = "< 0.001" if p < 0.001 else f"= {p:.4f}"
+        label   = PLAIN_LABELS.get(pred, pred.replace("_", " "))
+        ci_str  = f"[{ci_lo:.2f}–{ci_hi:.2f}]"
 
-    for i, (_, row) in enumerate(significant.iterrows(), start=1):
-        predictor = row["Predictor"]
-        odds_ratio = row["OR"]
-        lower_ci = row["95% CI Lower"]
-        upper_ci = row["95% CI Upper"]
-        p_value = row["p-value"]
-
-        if odds_ratio > 1:
-            text = (
-                f"{i}. {predictor}: This predictor is associated with higher odds "
-                f"of a fatal collision. Holding other predictors constant, the odds "
-                f"of a fatal collision are {odds_ratio:.2f} times higher compared "
-                f"with the reference category or baseline level "
-                f"(OR={odds_ratio:.2f}, 95% CI={lower_ci:.2f}-{upper_ci:.2f}, "
-                f"p={p_value:.4f})."
+        if OR > 1:
+            sentence = (
+                f"{label} was associated with {OR:.2f}× higher odds of a fatal "
+                f"collision compared to the reference category "
+                f"(OR = {OR:.2f}, 95% CI = {ci_str}, p {p_str})."
             )
         else:
-            reduction = (1 - odds_ratio) * 100
-            text = (
-                f"{i}. {predictor}: This predictor is associated with lower odds "
-                f"of a fatal collision. Holding other predictors constant, the odds "
-                f"of a fatal collision are about {reduction:.1f}% lower compared "
-                f"with the reference category or baseline level "
-                f"(OR={odds_ratio:.2f}, 95% CI={lower_ci:.2f}-{upper_ci:.2f}, "
-                f"p={p_value:.4f})."
+            pct = round((1 - OR) * 100, 1)
+            sentence = (
+                f"{label} was associated with a {pct}% reduction in the odds of a "
+                f"fatal collision compared to the reference category "
+                f"(OR = {OR:.2f}, 95% CI = {ci_str}, p {p_str})."
             )
 
-        lines.append(text)
-        lines.append("")
+        interpretations.append({
+            "rank":     rank + 1,
+            "predictor": pred,
+            "label":    label,
+            "OR":       OR,
+            "CI_low":   ci_lo,
+            "CI_high":  ci_hi,
+            "p_value":  p,
+            "sentence": sentence,
+        })
 
-    return "\n".join(lines)
+    return interpretations
 
 
-# =========================================================
+# ─────────────────────────────────────────────────────────────────────────────
+# Figures
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _style_ax(ax, xlabel="", ylabel="", title="", grid_axis="y"):
+    ax.set_facecolor(C_BG)
+    ax.set_title(title, **FONT_TITLE, pad=8)
+    ax.set_xlabel(xlabel, **FONT_AX)
+    ax.set_ylabel(ylabel, **FONT_AX)
+    ax.tick_params(labelsize=8.5, colors="#4A4A4A")
+    for spine in ax.spines.values():
+        spine.set_edgecolor(C_GRID)
+    ax.grid(axis=grid_axis, color=C_GRID, linewidth=0.7, zorder=0)
+    ax.set_axisbelow(True)
+
+
+def plot_vif_before_after(vif_before: pd.DataFrame,
+                          vif_after: pd.DataFrame,
+                          out: Path) -> None:
+    fig, axes = plt.subplots(1, 2, figsize=(16, 9), facecolor="white")
+    fig.suptitle(
+        "Fig 11 — VIF: Before (91 raw features) vs. After (28 core features)\n"
+        "Threshold = 5  |  Resolved by curated feature selection + reference-category dropping",
+        fontsize=12, fontweight="bold", color="#1A1A2E"
+    )
+
+    for ax, vif_df, title in [
+        (axes[0], vif_before, "Before — Top 30 VIF (91 raw features)"),
+        (axes[1], vif_after,  "After  — All 28 core features"),
+    ]:
+        plot_df = vif_df[np.isfinite(vif_df["VIF"])].head(30).copy()
+        colors  = [C_SIG if v > 5 else C_GREEN for v in plot_df["VIF"]]
+        labels  = [f[:38] for f in plot_df["feature"]]
+
+        ax.barh(range(len(labels)), plot_df["VIF"].values,
+                color=colors, edgecolor="white", zorder=3)
+        ax.set_yticks(range(len(labels)))
+        ax.set_yticklabels(labels, fontsize=7.5)
+        ax.invert_yaxis()
+        ax.axvline(5, color=C_ACCENT, linestyle="--", linewidth=1.5,
+                   label="VIF = 5 threshold")
+
+        for i, (bar_h, v) in enumerate(
+                zip(plot_df["VIF"].values, plot_df["VIF"].values)):
+            ax.text(v + 0.1, i, f"{v:.1f}", va="center", fontsize=7)
+
+        _style_ax(ax, xlabel="VIF", title=title, grid_axis="x")
+        ax.legend(fontsize=8.5, framealpha=0.9)
+
+    legend_patches = [
+        mpatches.Patch(color=C_SIG,   label="VIF > 5 (problematic)"),
+        mpatches.Patch(color=C_GREEN, label="VIF ≤ 5 (acceptable)"),
+    ]
+    fig.legend(handles=legend_patches, loc="lower center",
+               ncol=2, fontsize=9, framealpha=0.9)
+
+    fig.tight_layout(rect=[0, 0.04, 1, 0.94])
+    fig.savefig(out / "task_26_vif_before_after.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print("  Saved task_26_vif_before_after.png")
+
+
+def plot_coef_table(tbl: pd.DataFrame, result, out: Path) -> None:
+    display = tbl.copy()
+    display["p-value-str"] = display["p-value"].apply(
+        lambda p: "< 0.001" if p < 0.001 else f"{p:.4f}")
+    display["OR 95% CI"] = display.apply(
+        lambda r: f"[{r['OR_CI_low']:.3f} – {r['OR_CI_high']:.3f}]", axis=1)
+    display["Sig"] = display["Significant"].map({True: "★", False: ""})
+
+    show_cols = ["Predictor", "Coefficient", "Std Error",
+                 "z-statistic", "p-value-str", "OR", "OR 95% CI", "Sig"]
+    cell_data = []
+    for _, row in display[show_cols].iterrows():
+        cell_data.append([
+            row["Predictor"][:40],
+            f"{row['Coefficient']:.4f}",
+            f"{row['Std Error']:.4f}",
+            f"{row['z-statistic']:.3f}",
+            row["p-value-str"],
+            f"{row['OR']:.4f}",
+            row["OR 95% CI"],
+            row["Sig"],
+        ])
+
+    n_sig = display["Significant"].sum()
+    fig, ax = plt.subplots(figsize=(18, 13), facecolor="white")
+    fig.suptitle(
+        f"Fig 12 — Logistic Regression Coefficient Table  ({n_sig}/{len(display)} significant at α=0.05)\n"
+        f"Pseudo R² = {result.prsquared:.4f}  |  AIC = {result.aic:.1f}  |  "
+        f"Log-Likelihood = {result.llf:.1f}  |  n = {int(result.nobs):,}\n"
+        "★ significant at p < 0.05  |  Reference: light=Daylight, rdsfcond=Dry, "
+        "traffictl=No Control, road_class=Major Arterial, accloc=At Intersection, impactype=Angle",
+        fontsize=10, fontweight="bold", color="#1A1A2E"
+    )
+    ax.axis("off")
+
+    col_labels = ["Predictor", "Coeff", "Std Err", "z",
+                  "p-value", "OR", "95% CI", "Sig"]
+    tbl_obj = ax.table(cellText=cell_data, colLabels=col_labels,
+                       cellLoc="center", loc="center")
+    tbl_obj.auto_set_font_size(False)
+    tbl_obj.set_fontsize(8.5)
+    tbl_obj.scale(1, 1.72)
+    tbl_obj.auto_set_column_width(col=list(range(len(col_labels))))
+
+    for j in range(len(col_labels)):
+        tbl_obj[0, j].set_facecolor("#1A1A2E")
+        tbl_obj[0, j].set_text_props(color="white", fontweight="bold")
+
+    for i, (_, row) in enumerate(display.iterrows(), start=1):
+        row_color = "#FADBD8" if row["Significant"] else "#F2F3F4"
+        for j in range(len(col_labels)):
+            tbl_obj[i, j].set_facecolor(row_color)
+        if row["Significant"]:
+            tbl_obj[i, len(col_labels)-1].set_text_props(color=C_SIG, fontweight="bold")
+
+    legend_patches = [
+        mpatches.Patch(color="#FADBD8", label="Significant (p < 0.05)"),
+        mpatches.Patch(color="#F2F3F4", label="Not significant"),
+    ]
+    ax.legend(handles=legend_patches, loc="lower right",
+              fontsize=9, framealpha=0.9)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.91])
+    fig.savefig(out / "task_25_logit_coef_table.png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print("  Saved task_25_logit_coef_table.png")
+
+
+def plot_or_forest(tbl: pd.DataFrame, out: Path) -> None:
+    sig = tbl[tbl["Significant"]].copy()
+    sig = sig[(sig["OR"] > 0.05) & (sig["OR"] < 100)]
+    sig = sig.sort_values("OR", ascending=True).reset_index(drop=True)
+
+    labels = [PLAIN_LABELS.get(p, p.replace("_", " "))[:55]
+              for p in sig["Predictor"]]
+    ors   = sig["OR"].values
+    ci_lo = sig["OR_CI_low"].values
+    ci_hi = sig["OR_CI_high"].values
+    y_pos = np.arange(len(labels))
+
+    fig, ax = plt.subplots(
+        figsize=(12, max(6, len(labels) * 0.42)), facecolor="white")
+    fig.suptitle(
+        "Fig 13 — Forest Plot: Odds Ratios for All Significant Predictors (p < 0.05)\n"
+        "(log scale  |  OR > 1 = increased fatal odds  |  CI bars = 95% confidence interval)",
+        fontsize=12, fontweight="bold", color="#1A1A2E"
+    )
+
+    colors = [C_SIG if o > 1 else C_OR_LOW for o in ors]
+    ax.barh(y_pos, ors, color=colors, alpha=0.7,
+            edgecolor="white", height=0.55, zorder=3)
+    ax.errorbar(ors, y_pos,
+                xerr=[ors - ci_lo, ci_hi - ors],
+                fmt="none", color="#1A1A2E",
+                capsize=3, linewidth=1.2, capthick=1.2, zorder=4)
+    ax.axvline(1.0, color=C_ACCENT, linestyle="--",
+               linewidth=2.0, label="OR = 1.0 (null)", zorder=5)
+
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(labels, fontsize=8.5)
+    ax.set_xlabel("Odds Ratio (log scale)", **FONT_AX)
+    ax.set_xscale("log")
+    ax.set_facecolor(C_BG)
+    ax.grid(axis="x", color=C_GRID, linewidth=0.7, zorder=0)
+    ax.set_axisbelow(True)
+    for spine in ax.spines.values():
+        spine.set_edgecolor(C_GRID)
+
+    legend_patches = [
+        mpatches.Patch(color=C_SIG,    label="OR > 1 — increased fatal odds"),
+        mpatches.Patch(color=C_OR_LOW, label="OR < 1 — reduced fatal odds"),
+        plt.Line2D([0], [0], color=C_ACCENT, linestyle="--",
+                   lw=2, label="OR = 1.0 (no effect)"),
+    ]
+    ax.legend(handles=legend_patches, fontsize=8.5, framealpha=0.9,
+              loc="lower right")
+
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    fig.savefig(out / "task_27_top_predictors_or_plot.png",
+                dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print("  Saved task_27_top_predictors_or_plot.png")
+
+
+def plot_plain_language(interpretations: list[dict], out: Path) -> None:
+    fig, ax = plt.subplots(figsize=(15, 10), facecolor="white")
+    fig.suptitle(
+        "Fig 14 — Plain-Language Interpretation of Top 5 Significant Predictors\n"
+        "Logistic Regression  |  Fatal Injury = 1, Non-Fatal = 0  |  "
+        "Reference categories noted in each card",
+        fontsize=12, fontweight="bold", color="#1A1A2E"
+    )
+    ax.axis("off")
+
+    card_colors  = ["#FADBD8", "#D5F5E3", "#D6EAF8", "#FEF9E7", "#E8DAEF"]
+    border_colors = [C_SIG, C_GREEN, "#2980B9", C_ACCENT, "#8E44AD"]
+
+    card_h = 0.168
+    gap    = 0.012
+    start_y = 0.93
+
+    for i, interp in enumerate(interpretations):
+        y  = start_y - i * (card_h + gap)
+        fc = card_colors[i]
+        ec = border_colors[i]
+
+        fancy = mpatches.FancyBboxPatch(
+            (0.01, y - card_h), 0.98, card_h,
+            boxstyle="round,pad=0.01",
+            facecolor=fc, edgecolor=ec, linewidth=2.2,
+            transform=ax.transAxes, zorder=2,
+        )
+        ax.add_patch(fancy)
+
+        # Rank
+        ax.text(0.04, y - card_h / 2, f"#{interp['rank']}",
+                transform=ax.transAxes, ha="center", va="center",
+                fontsize=20, fontweight="bold", color=ec, zorder=3)
+
+        # OR + CI + p
+        or_val = interp["OR"]
+        ax.text(0.91, y - card_h * 0.28,
+                f"OR = {or_val:.2f}",
+                transform=ax.transAxes, ha="center", va="center",
+                fontsize=12, fontweight="bold", color=ec, zorder=3)
+        ax.text(0.91, y - card_h * 0.57,
+                f"95% CI [{interp['CI_low']:.2f} – {interp['CI_high']:.2f}]",
+                transform=ax.transAxes, ha="center", va="center",
+                fontsize=8, color="#4A4A4A", zorder=3)
+        p_str = "p < 0.001" if interp["p_value"] < 0.001 else f"p = {interp['p_value']:.4f}"
+        ax.text(0.91, y - card_h * 0.82,
+                p_str,
+                transform=ax.transAxes, ha="center", va="center",
+                fontsize=8, color="#4A4A4A", style="italic", zorder=3)
+
+        # Label
+        ax.text(0.09, y - card_h * 0.25,
+                interp["label"],
+                transform=ax.transAxes, ha="left", va="center",
+                fontsize=10, fontweight="bold", color="#1A1A2E", zorder=3)
+
+        # Sentence
+        ax.text(0.09, y - card_h * 0.70,
+                interp["sentence"],
+                transform=ax.transAxes, ha="left", va="center",
+                fontsize=8.8, color="#2C3E50", style="italic", zorder=3)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    fig.savefig(out / "task_27_plain_language_interpretations.png",
+                dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print("  Saved task_27_plain_language_interpretations.png")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Main
-# =========================================================
+# ─────────────────────────────────────────────────────────────────────────────
 
-def main(input_path, output_dir):
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
+def run(input_path: str, output_dir: str = "outputs"):
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
 
-    # Load Story 1 encoded data
-    df = load_data(input_path)
+    print("═══ Step 1: Building feature matrices ═══")
+    (X_train_raw, X_train_core, X_test_core,
+     y_train, y_test, raw_cols, core_cols) = build_matrices(input_path)
+    print(f"  Raw matrix:  {X_train_raw.shape[0]:,} × {X_train_raw.shape[1]}")
+    print(f"  Core matrix: {X_train_core.shape[0]:,} × {X_train_core.shape[1]}")
+    print(f"  Fatal in train: {y_train.sum():,} ({y_train.mean()*100:.1f}%) — NO SMOTE")
 
-    # Task #24: Prepare predictors
-    X, y = prepare_predictors(df)
+    print("\n═══ Step 2: First-pass VIF (91 raw features) ═══")
+    vif_before = compute_vif(X_train_raw)
+    n_inf   = (vif_before["VIF"] == np.inf).sum()
+    n_high  = (vif_before["VIF"] > 5).sum()
+    print(f"  Infinite VIF (perfect collinearity): {n_inf}")
+    print(f"  VIF > 5: {n_high}")
+    print("  Top 10:")
+    finite_vif = vif_before[np.isfinite(vif_before["VIF"])]
+    print(finite_vif.head(10).to_string(index=False))
 
-    # Task #26: Check VIF and reduce multicollinearity
-    X_reduced, final_vif, dropped_vif = reduce_multicollinearity(X, threshold=5.0)
+    print("\n═══ Step 3: Resolution strategy ═══")
+    print("  → Selected 28-feature core set:")
+    print("    • Dropped all OHE reference categories (one per group)")
+    print("    • Dropped latitude/longitude (spatial collinearity, not interpretable in logit)")
+    print("    • Dropped 'cyclist' boolean (collinear with impactype_Cyclist Collision)")
+    print("    • Dropped 'day_of_week' (collinear with is_weekend)")
+    print("    • Dropped 'month' (cyclic, collinear with year/hour)")
+    print("    • Dropped sparse OHE dummies (< 50 records in category)")
+    print(f"  → Core features used: {core_cols}")
 
-    final_vif.to_csv(output_dir / "task_26_final_vif_table.csv", index=False)
-    dropped_vif.to_csv(output_dir / "task_26_dropped_high_vif_predictors.csv", index=False)
+    print("\n═══ Step 4: Second-pass VIF (28 core features) ═══")
+    vif_after = compute_vif(X_train_core)
+    high_after = vif_after[vif_after["VIF"] > 5]
+    if len(high_after):
+        print(f"  WARNING — {len(high_after)} features still > 5:")
+        print(high_after.to_string(index=False))
+    else:
+        print(f"  ✓ All {len(vif_after)} features have VIF ≤ 5")
+    print(vif_after.to_string(index=False))
 
-    # Task #24: Fit logistic regression
-    result = fit_logistic_model(X_reduced, y)
+    # Save VIF reports
+    vif_before["pass"] = "before (91 features)"
+    vif_after["pass"]  = "after (28 core features)"
+    pd.concat([vif_before, vif_after]).to_csv(out / "task_26_vif_report.csv", index=False)
+    print("  Saved task_26_vif_report.csv")
 
-    with open(output_dir / "task_24_logistic_model_summary.txt", "w", encoding="utf-8") as f:
+    print("\n═══ Step 5: Fitting logistic regression (Newton-Raphson) ═══")
+    result = fit_logit(X_train_core, y_train)
+    print(f"  Converged:      {result.mle_retvals.get('converged', True)}")
+    print(f"  n (train):      {int(result.nobs):,}")
+    print(f"  Log-likelihood: {result.llf:.4f}")
+    print(f"  AIC:            {result.aic:.4f}")
+    print(f"  McFadden R²:    {result.prsquared:.4f}")
+
+    # Task #24 — save model summary
+    with open(out / "task_24_logistic_model_summary.txt", "w", encoding="utf-8") as f:
         f.write(str(result.summary()))
+        f.write(f"\n\nModel fit statistics:\n")
+        f.write(f"  Converged      : {result.mle_retvals.get('converged', True)}\n")
+        f.write(f"  n (train)      : {int(result.nobs):,}\n")
+        f.write(f"  Log-likelihood : {result.llf:.4f}\n")
+        f.write(f"  AIC            : {result.aic:.4f}\n")
+        f.write(f"  McFadden R²    : {result.prsquared:.4f}\n")
+    print("  Saved task_24_logistic_model_summary.txt")
 
-    # Task #25: Coefficient table
-    coef_table = build_coefficient_table(result)
-    coef_table.to_csv(output_dir / "task_25_logistic_regression_coefficients.csv", index=False)
+    print("\n═══ Step 6: Coefficient table ═══")
+    coef_tbl = extract_coef_table(result)
+    n_sig = coef_tbl["Significant"].sum()
+    print(f"  {n_sig}/{len(coef_tbl)} predictors significant at α = 0.05")
+    print(coef_tbl[["Predictor","Coefficient","OR","p-value",
+                     "OR_CI_low","OR_CI_high","Significant"]].to_string(index=False))
+    coef_tbl.to_csv(out / "task_25_logit_results.csv", index=False)
+    print("  Saved task_25_logit_results.csv")
 
-    significant_table = coef_table[coef_table["Significant p<0.05"] == True].copy()
-    significant_table.to_csv(output_dir / "task_25_significant_predictors.csv", index=False)
+    print("\n═══ Step 8: Plain-language interpretations (top 5) ═══")
+    interps = plain_language_interpretations(coef_tbl)
+    for interp in interps:
+        print(f"\n  #{interp['rank']}  {interp['predictor']}")
+        print(f"     {interp['sentence']}")
 
-    # Task #27: Interpretation
-    interpretation = interpret_top_predictors(coef_table)
+    print("\n═══ Generating figures ═══")
+    plot_vif_before_after(vif_before, vif_after, out)
+    plot_coef_table(coef_tbl, result, out)
+    plot_or_forest(coef_tbl, out)
+    plot_plain_language(interps, out)
 
-    with open(output_dir / "task_27_top_5_predictors_interpretation.txt", "w", encoding="utf-8") as f:
-        f.write(interpretation)
-
-    print("\nStory 4 complete.")
-    print(f"Outputs saved to: {output_dir}")
-
-    print("\nGenerated files:")
-    print("1. task_24_logistic_model_summary.txt")
-    print("2. task_25_logistic_regression_coefficients.csv")
-    print("3. task_25_significant_predictors.csv")
-    print("4. task_26_final_vif_table.csv")
-    print("5. task_26_dropped_high_vif_predictors.csv")
-    print("6. task_27_top_5_predictors_interpretation.txt")
-
-    print("\nTop 5 significant predictors:")
-    print(significant_table.head(5)[[
-        "Predictor",
-        "Coefficient",
-        "Std Error",
-        "z",
-        "p-value",
-        "OR",
-        "95% CI Lower",
-        "95% CI Upper",
-    ]])
-
-    print("\nPlain-language interpretation:")
-    print(interpretation)
+    print(f"\n═══ Complete — outputs saved to {out.resolve()} ═══")
+    return coef_tbl, interps, result
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Story 4: Binary logistic regression for predictor effect interpretation."
-    )
-
-    parser.add_argument(
-        "--input",
-        required=True,
-        help="Path to Story 1 encoded dataset, usually outputs/story-1/ksi_encoded.csv"
-    )
-
-    parser.add_argument(
-        "--output-dir",
-        required=True,
-        help="Directory where Story 4 outputs will be saved"
-    )
-
+        description="Story 4 – Logistic Regression + VIF")
+    parser.add_argument("--input",      required=True)
+    parser.add_argument("--output-dir", default="outputs")
     args = parser.parse_args()
-
-    main(args.input, args.output_dir)
+    run(args.input, args.output_dir)

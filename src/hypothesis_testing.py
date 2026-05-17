@@ -12,12 +12,12 @@ H4: traffictl vs. acclass               — chi-square + fatality rate table
 
 Outputs
 ───────
-  fig6_h1_light_rdsfcond.png
-  fig7_h2_behavioural.png
-  fig8_h3_road_user.png
-  fig9_h4_traffictl.png
-  fig10_hypothesis_summary.png
-  hypothesis_results.csv
+  task_17_h1_light_rdsfcond.png
+  task_18_h2_behavioural.png
+  task_19_h3_road_user.png
+  task_20_h4_traffictl.png
+  task_21_hypothesis_summary.png
+  task_22_hypothesis_results.csv
 
 Usage:
     python src/statistical_inference.py \
@@ -141,9 +141,22 @@ def _stat_box(ax, chi2, p, dof, cv, reject, extra_lines=None):
 
 
 def load_data(path: str) -> pd.DataFrame:
+    """
+    Load raw KSI CSV for statistical inference.
+
+    Story 3 reads the RAW CSV (not ksi_encoded.csv) because the
+    chi-square tests require the original categorical columns:
+    light, rdsfcond, drivcond, road_user, traffictl, aggressive, distracted.
+    These columns are dropped or OHE-expanded in ksi_encoded.csv.
+    """
     df = pd.read_csv(path, low_memory=False)
     df = df[df["acclass"].isin(["Fatal Injury", "Non-Fatal Injury"])].copy()
     df["acclass_binary"] = (df["acclass"] == "Fatal Injury").astype(int)
+
+    # Cap invage outliers (years recorded as ages, e.g. 2023)
+    if "invage" in df.columns:
+        df.loc[df["invage"] > 110, "invage"] = np.nan
+
     return df
 
 
@@ -215,9 +228,9 @@ def test_h1(df: pd.DataFrame, out: Path) -> list[dict]:
              wrap=True, bbox=dict(boxstyle="round", fc="#EBF5FB", ec=C_NONFATAL, lw=1))
 
     fig.tight_layout(rect=[0, 0.05, 1, 0.95])
-    fig.savefig(out / "fig6_h1_light_rdsfcond.png", dpi=150, bbox_inches="tight")
+    fig.savefig(out / "task_17_h1_light_rdsfcond.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print("  Saved fig6_h1_light_rdsfcond.png")
+    print("  Saved task_17_h1_light_rdsfcond.png")
     return results
 
 
@@ -354,9 +367,9 @@ def test_h2(df: pd.DataFrame, out: Path) -> list[dict]:
              bbox=dict(boxstyle="round", fc="#FDEDEC", ec=C_FATAL, lw=1))
 
     fig.tight_layout(rect=[0, 0.04, 1, 0.95])
-    fig.savefig(out / "fig7_h2_behavioural.png", dpi=150, bbox_inches="tight")
+    fig.savefig(out / "task_18_h2_behavioural.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print("  Saved fig7_h2_behavioural.png")
+    print("  Saved task_18_h2_behavioural.png")
     return results
 
 
@@ -471,9 +484,9 @@ def test_h3(df: pd.DataFrame, out: Path) -> list[dict]:
              bbox=dict(boxstyle="round", fc="#EAF2FF", ec=C_NONFATAL, lw=1))
 
     fig.tight_layout(rect=[0, 0.05, 1, 0.95])
-    fig.savefig(out / "fig8_h3_road_user.png", dpi=150, bbox_inches="tight")
+    fig.savefig(out / "task_19_h3_road_user.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print("  Saved fig8_h3_road_user.png")
+    print("  Saved task_19_h3_road_user.png")
 
     results.append({
         "hypothesis": "H3", "variable": "road_user",
@@ -604,9 +617,9 @@ def test_h4(df: pd.DataFrame, out: Path) -> list[dict]:
              bbox=dict(boxstyle="round", fc="#EAFAF1", ec=C_GREEN, lw=1))
 
     fig.tight_layout(rect=[0, 0.06, 1, 0.95])
-    fig.savefig(out / "fig9_h4_traffictl.png", dpi=150, bbox_inches="tight")
+    fig.savefig(out / "task_20_h4_traffictl.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print("  Saved fig9_h4_traffictl.png")
+    print("  Saved task_20_h4_traffictl.png")
 
     results.append({
         "hypothesis": "H4", "variable": "traffictl (grouped)",
@@ -718,14 +731,14 @@ def build_summary_table(all_results: list[dict], out: Path) -> pd.DataFrame:
             color="#555555", style="italic")
 
     fig.tight_layout(rect=[0, 0.03, 1, 0.92])
-    fig.savefig(out / "fig10_hypothesis_summary.png", dpi=150, bbox_inches="tight")
+    fig.savefig(out / "task_21_hypothesis_summary.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print("  Saved fig10_hypothesis_summary.png")
+    print("  Saved task_21_hypothesis_summary.png")
 
     # Save CSV
     all_results_df = pd.DataFrame(all_results)
-    all_results_df.to_csv(out / "hypothesis_results.csv", index=False)
-    print("  Saved hypothesis_results.csv")
+    all_results_df.to_csv(out / "task_22_hypothesis_results.csv", index=False)
+    print("  Saved task_22_hypothesis_results.csv")
 
     return summary_df
 
@@ -767,7 +780,8 @@ def run(input_path: str, output_dir: str = "outputs") -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Story 3 – Statistical Inference H1–H4")
-    parser.add_argument("--input",      required=True)
+    parser.add_argument("--input",      required=True,
+                        help="Path to raw KSI CSV (data/Motor_Vehicle_Collisions_with_KSI_Data_-_4326.csv)")
     parser.add_argument("--output-dir", default="outputs")
     args = parser.parse_args()
     run(args.input, args.output_dir)
