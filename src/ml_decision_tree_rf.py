@@ -7,6 +7,17 @@ Tasks covered:
 #41 - Evaluate both models and save model comparison table
 #42 - Extract and plot Random Forest feature importances
 #43 - Plot Random Forest learning curves
+
+Fix applied (2026-05-20):
+  - REMOVED internal train_test_split() — Story 7 must inherit the exact
+    same split produced by Story 6 (train_indices.csv / test_indices.csv).
+  - REMOVED raw-CSV pipeline calls — Story 7 reads ksi_encoded.csv (already
+    cleaned and OHE-encoded by Story 1), consistent with the README input
+    file rules for Stories 7-9.
+  - ADDED --indices-dir and --models-dir CLI arguments to match the run
+    command documented in the README.
+  - Filename is ml_decision_tree_rf.py so existing test imports
+    continue to work without changes.
 """
 
 import argparse
@@ -20,21 +31,22 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
-from sklearn.model_selection import GridSearchCV, RandomizedSearchCV, learning_curve, train_test_split
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    roc_auc_score,
+)
+from sklearn.model_selection import (
+    GridSearchCV,
+    RandomizedSearchCV,
+    learning_curve,
+)
 from sklearn.tree import DecisionTreeClassifier
 
-sys.path.insert(0, str(Path(__file__).parent))
-
-from data_preparation import (
-    load_dataset,
-    impute_and_flag,
-    engineer_temporal,
-    encode_target,
-    encode_categoricals,
-)
-
-
+# Columns that must never be used as features — identifiers, target leakages,
+# or high-cardinality free-text fields (mirrors Story 6's drop list).
 DROP_COLUMNS = {
     "_id", "collision_id", "acclass", "accdate", "geometry",
     "stname1", "stname2", "stname3",
@@ -48,33 +60,70 @@ DROP_COLUMNS = {
 }
 
 
+# ---------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------
+
 def ensure_output_dir(output_dir):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
 
 
-def build_model_data(input_path):
-    df = load_dataset(input_path)
-    df = impute_and_flag(df)
-    df = engineer_temporal(df)
-    df = encode_target(df)
-    df = encode_categoricals(df)
+def build_model_data(input_path, indices_dir):
+    """
+    Load ksi_encoded.csv and slice it using the train/test indices
+    saved by Story 6.  This guarantees Stories 7, 8, and 9 all
+    evaluate on exactly the same held-out set.
 
-    y = df["acclass_binary"]
+    Parameters
+    ----------
+    input_path : str | Path
+        Path to outputs/story-1/ksi_encoded.csv
+    indices_dir : str | Path
+        Path to outputs/story-6/ (contains train_indices.csv and
+        test_indices.csv)
 
+    Returns
+    -------
+    X_train, X_test, y_train, y_test
+    """
+    indices_dir = Path(indices_dir)
+
+    # --- Load the encoded dataset (Story 1 output) ---
+    df = pd.read_csv(input_path)
+
+    # --- Load Story 6 split indices ---
+    train_idx_path = indices_dir / "train_indices.csv"
+    test_idx_path  = indices_dir / "test_indices.csv"
+
+    if not train_idx_path.exists():
+        raise FileNotFoundError(
+            f"train_indices.csv not found in {indices_dir}. "
+            "Run Story 6 (ml_logistic_baseline.py) first."
+        )
+    if not test_idx_path.exists():
+        raise FileNotFoundError(
+            f"test_indices.csv not found in {indices_dir}. "
+            "Run Story 6 (ml_logistic_baseline.py) first."
+        )
+
+    train_idx = pd.read_csv(train_idx_path).squeeze("columns")
+    test_idx  = pd.read_csv(test_idx_path).squeeze("columns")
+
+    # --- Build feature matrix ---
     drop_cols = [col for col in DROP_COLUMNS if col in df.columns]
     X = df.drop(columns=drop_cols + ["acclass_binary"], errors="ignore")
-
     X = X.select_dtypes(include=["number"]).fillna(0)
+    y = df["acclass_binary"]
 
-    return train_test_split(
-        X,
-        y,
-        test_size=0.2,
-        random_state=42,
-        stratify=y,
-    )
+    # Slice using Story 6 indices (positional iloc — indices are row positions)
+    X_train = X.iloc[train_idx.values]
+    X_test  = X.iloc[test_idx.values]
+    y_train = y.iloc[train_idx.values]
+    y_test  = y.iloc[test_idx.values]
+
+    return X_train, X_test, y_train, y_test
 
 
 # ---------------------------------------------------------
@@ -86,7 +135,7 @@ def build_model_data(input_path):
 # ---------------------------------------------------------
 def train_decision_tree(X_train, y_train, cv=5):
     param_grid = {
-        "max_depth": [3, 5, 10, 15],
+        "max_depth":        [3, 5, 10, 15],
         "min_samples_leaf": [5, 10, 25, 50],
     }
 
@@ -115,8 +164,8 @@ def train_decision_tree(X_train, y_train, cv=5):
 # ---------------------------------------------------------
 def train_random_forest(X_train, y_train, cv=5, n_iter=10):
     param_dist = {
-        "n_estimators": [100, 200, 300, 400, 500],
-        "max_depth": [5, 10, 15, 20],
+        "n_estimators":     [100, 200, 300, 400, 500],
+        "max_depth":        [5, 10, 15, 20],
         "min_samples_leaf": [5, 10, 25, 50],
     }
 
@@ -137,9 +186,9 @@ def train_random_forest(X_train, y_train, cv=5, n_iter=10):
 
     random_search.fit(X_train, y_train)
 
-    best_model = random_search.best_estimator_
+    best_model  = random_search.best_estimator_
     best_params = random_search.best_params_
-    oob_score = best_model.oob_score_
+    oob_score   = best_model.oob_score_
 
     return best_model, best_params, oob_score
 
@@ -155,18 +204,36 @@ def evaluate_model(model, X_test, y_test, model_name):
     y_prob = model.predict_proba(X_test)[:, 1]
 
     return {
-        "model": model_name,
-        "accuracy": accuracy_score(y_test, y_pred),
+        "model":     model_name,
+        "accuracy":  accuracy_score(y_test, y_pred),
         "precision": precision_score(y_test, y_pred, zero_division=0),
-        "recall": recall_score(y_test, y_pred, zero_division=0),
-        "f1": f1_score(y_test, y_pred, zero_division=0),
-        "roc_auc": roc_auc_score(y_test, y_prob),
+        "recall":    recall_score(y_test, y_pred, zero_division=0),
+        "f1":        f1_score(y_test, y_pred, zero_division=0),
+        "roc_auc":   roc_auc_score(y_test, y_prob),
     }
 
 
-def save_model_comparison(metrics_rows, output_dir):
+def save_model_comparison(metrics_rows, output_dir, models_dir=None):
+    """
+    Save Story 7 metrics and, if models_dir is provided, append them to the
+    shared model_comparison_table.csv that Story 6 started.
+    """
     comparison_df = pd.DataFrame(metrics_rows)
-    comparison_df.to_csv(output_dir / "task_41_model_comparison_tree_models.csv", index=False)
+    comparison_df.to_csv(
+        output_dir / "task_41_model_comparison_tree_models.csv",
+        index=False,
+    )
+
+    # Append to Story 6's shared comparison table when available
+    if models_dir is not None:
+        shared_path = Path(models_dir) / "model_comparison_table.csv"
+        if shared_path.exists():
+            existing = pd.read_csv(shared_path)
+            combined = pd.concat([existing, comparison_df], ignore_index=True)
+            combined.to_csv(shared_path, index=False)
+        else:
+            comparison_df.to_csv(shared_path, index=False)
+
     return comparison_df
 
 
@@ -176,10 +243,14 @@ def save_model_comparison(metrics_rows, output_dir):
 # Save top 15 features as a bar chart for dashboard/report.
 # ---------------------------------------------------------
 def plot_random_forest_feature_importance(model, feature_names, output_dir, top_n=15):
-    importances = pd.DataFrame({
-        "feature": feature_names,
-        "importance": model.feature_importances_,
-    }).sort_values("importance", ascending=False).head(top_n)
+    importances = (
+        pd.DataFrame({
+            "feature":    feature_names,
+            "importance": model.feature_importances_,
+        })
+        .sort_values("importance", ascending=False)
+        .head(top_n)
+    )
 
     importances.to_csv(
         output_dir / "task_42_random_forest_top_15_feature_importances.csv",
@@ -215,13 +286,13 @@ def plot_random_forest_learning_curve(model, X_train, y_train, output_dir, cv=5)
         train_sizes=[0.2, 0.4, 0.6, 0.8, 1.0],
     )
 
-    train_mean = train_scores.mean(axis=1)
+    train_mean      = train_scores.mean(axis=1)
     validation_mean = validation_scores.mean(axis=1)
 
     learning_df = pd.DataFrame({
-        "train_size": train_sizes,
-        "training_f1": train_mean,
-        "validation_f1": validation_mean,
+        "train_size":     train_sizes,
+        "training_f1":    train_mean,
+        "validation_f1":  validation_mean,
     })
 
     learning_df.to_csv(
@@ -230,7 +301,7 @@ def plot_random_forest_learning_curve(model, X_train, y_train, output_dir, cv=5)
     )
 
     plt.figure(figsize=(9, 5))
-    plt.plot(train_sizes, train_mean, marker="o", label="Training F1")
+    plt.plot(train_sizes, train_mean,      marker="o", label="Training F1")
     plt.plot(train_sizes, validation_mean, marker="o", label="Validation F1")
     plt.title("Random Forest Learning Curve")
     plt.xlabel("Training Set Size")
@@ -243,44 +314,54 @@ def plot_random_forest_learning_curve(model, X_train, y_train, output_dir, cv=5)
     return learning_df
 
 
-def run_story_7(input_path, output_dir):
+# ---------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------
+
+def run_story_7(input_path, output_dir, indices_dir, models_dir=None):
     output_dir = ensure_output_dir(output_dir)
 
-    X_train, X_test, y_train, y_test = build_model_data(input_path)
+    # Task #39 / #40 — build features using Story 6 split
+    X_train, X_test, y_train, y_test = build_model_data(input_path, indices_dir)
 
+    # Task #39 — Decision Tree with GridSearchCV
     decision_tree_model, decision_tree_params = train_decision_tree(X_train, y_train)
 
+    # Task #40 — Random Forest with RandomizedSearchCV
     random_forest_model, random_forest_params, oob_score = train_random_forest(
-        X_train,
-        y_train,
+        X_train, y_train,
     )
 
+    # Task #41 — Evaluate and save metrics
     metrics_rows = [
         evaluate_model(decision_tree_model, X_test, y_test, "Decision Tree"),
         evaluate_model(random_forest_model, X_test, y_test, "Random Forest"),
     ]
 
-    comparison_df = save_model_comparison(metrics_rows, output_dir)
+    comparison_df = save_model_comparison(metrics_rows, output_dir, models_dir)
 
+    # Save best hyperparameters (tasks #39 and #40)
     pd.DataFrame([
         {
-            "model": "Decision Tree",
-            "best_params": decision_tree_params,
-            "oob_score": None,
+            "model":       "Decision Tree",
+            "best_params": str(decision_tree_params),
+            "oob_score":   None,
         },
         {
-            "model": "Random Forest",
-            "best_params": random_forest_params,
-            "oob_score": oob_score,
+            "model":       "Random Forest",
+            "best_params": str(random_forest_params),
+            "oob_score":   oob_score,
         },
     ]).to_csv(output_dir / "task_39_40_best_parameters.csv", index=False)
 
+    # Task #42 — Feature importance plot
     plot_random_forest_feature_importance(
         random_forest_model,
         X_train.columns,
         output_dir,
     )
 
+    # Task #43 — Learning curve plot
     plot_random_forest_learning_curve(
         random_forest_model,
         X_train,
@@ -291,29 +372,56 @@ def run_story_7(input_path, output_dir):
     print("Story 7 complete.")
     print("Decision Tree best parameters:", decision_tree_params)
     print("Random Forest best parameters:", random_forest_params)
-    print("Random Forest OOB score:", oob_score)
-    print(comparison_df)
-    print(f"Outputs saved to: {output_dir}")
+    print(f"Random Forest OOB score:       {oob_score:.4f}")
+    print()
+    print(comparison_df.to_string(index=False))
+    print(f"\nOutputs saved to: {output_dir}")
 
+
+# ---------------------------------------------------------
+# CLI
+# ---------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser()
-
-    parser.add_argument(
-        "--input",
-        default="data/Motor_Vehicle_Collisions_with_KSI_Data_-_4326.csv",
-        help="Path to raw KSI dataset",
+    parser = argparse.ArgumentParser(
+        description="Story 7 — Decision Tree and Random Forest classifiers"
     )
 
     parser.add_argument(
-        "--output",
+        "--input",
+        default="outputs/story-1/ksi_encoded.csv",
+        help="Path to ksi_encoded.csv produced by Story 1",
+    )
+    parser.add_argument(
+        "--output-dir",
         default="outputs/story-7",
         help="Folder to save Story 7 outputs",
+    )
+    parser.add_argument(
+        "--indices-dir",
+        required=True,
+        help=(
+            "Folder containing train_indices.csv and test_indices.csv "
+            "produced by Story 6"
+        ),
+    )
+    parser.add_argument(
+        "--models-dir",
+        default=None,
+        help=(
+            "Folder containing model_comparison_table.csv from Story 6 "
+            "(optional — Story 7 metrics will be appended)"
+        ),
     )
 
     args = parser.parse_args()
 
-    run_story_7(args.input, args.output)
+    run_story_7(
+        input_path=args.input,
+        output_dir=args.output_dir,
+        indices_dir=args.indices_dir,
+        models_dir=args.models_dir,
+    )
 
 
 if __name__ == "__main__":
