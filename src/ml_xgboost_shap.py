@@ -5,13 +5,13 @@ Tasks covered:
 #45 Train and tune XGBoost using the Story 6 train/test split.
 #46 Handle class imbalance using scale_pos_weight.
 #47 Evaluate XGBoost on the held-out test set and append comparison metrics.
-#48 Generate SHAP beeswarm, bar, and dependence plots.
+#48 Generate SHAP beeswarm, bar, and dependence plots for the best XGBoost model.
 #49 Export plain-language SHAP interpretation.
 
 Dependencies:
 - Story 1: outputs/story-1/ksi_encoded.csv
-- Story 6: outputs/story-6/train_indices.csv, test_indices.csv
-- Story 7: outputs/story-7 metrics/models if available
+- Story 6: outputs/story-6/train_indices.csv, test_indices.csv, logistic_baseline_model.pkl
+- Story 7: outputs/story-7/rf_model.pkl, task_41_model_comparison_table.csv
 
 Usage:
 python src/ml_xgboost_shap.py \
@@ -23,6 +23,7 @@ python src/ml_xgboost_shap.py \
 
 import argparse
 import json
+import pickle
 import warnings
 from pathlib import Path
 
@@ -99,6 +100,108 @@ def load_story6_indices(indices_dir):
     print(f"Test indices : {len(test_indices)}")
 
     return train_indices, test_indices
+
+
+def validate_story6_dependencies(indices_dir, models_dirs):
+    """
+    Validate Story 6 dependency files.
+
+    Story 8 must reuse the exact same train/test split from Story 6.
+    It also confirms the logistic baseline model exists for model comparison continuity.
+    """
+    indices_dir = Path(indices_dir)
+
+    required_files = [
+        indices_dir / "train_indices.csv",
+        indices_dir / "test_indices.csv",
+    ]
+
+    for required_file in required_files:
+        if not required_file.exists():
+            raise FileNotFoundError(
+                f"Missing required Story 6 file: {required_file}. "
+                "Run Story 6 before Story 8."
+            )
+
+    logistic_model_found = False
+
+    for directory in models_dirs:
+        directory = Path(directory)
+        if (directory / "logistic_baseline_model.pkl").exists():
+            logistic_model_found = True
+            print("\nValidated Story 6 dependency.")
+            print(f"Found logistic baseline model: {directory / 'logistic_baseline_model.pkl'}")
+            break
+
+    if not logistic_model_found:
+        raise FileNotFoundError(
+            "Missing Story 6 logistic_baseline_model.pkl in --models-dir. "
+            "Expected it inside outputs/story-6."
+        )
+
+
+def validate_story7_dependencies(models_dirs):
+    """
+    Validate Story 7 dependency files.
+
+    Story 8 depends on Story 7 because:
+    - rf_model.pkl confirms the Random Forest model was trained and saved.
+    - task_41_model_comparison_table.csv provides previous model metrics for comparison.
+
+    SHAP in Story 8 is computed for the best XGBoost model, as required by Task #48.
+    """
+    story7_dir = None
+
+    for directory in models_dirs:
+        directory = Path(directory)
+
+        has_rf_model = (directory / "rf_model.pkl").exists()
+        has_comparison_table = (directory / "task_41_model_comparison_table.csv").exists()
+
+        if has_rf_model or has_comparison_table:
+            story7_dir = directory
+            break
+
+    if story7_dir is None:
+        raise FileNotFoundError(
+            "Story 7 outputs were not found in --models-dir. "
+            "Expected outputs/story-7 with rf_model.pkl and task_41_model_comparison_table.csv."
+        )
+
+    rf_model_path = story7_dir / "rf_model.pkl"
+    comparison_path = story7_dir / "task_41_model_comparison_table.csv"
+
+    if not rf_model_path.exists():
+        raise FileNotFoundError(
+            f"Missing Story 7 Random Forest model: {rf_model_path}. "
+            "Please rerun Story 7 after the latest patch."
+        )
+
+    if not comparison_path.exists():
+        raise FileNotFoundError(
+            f"Missing Story 7 model comparison table: {comparison_path}. "
+            "Please rerun Story 7 after the latest patch."
+        )
+
+    try:
+        with open(rf_model_path, "rb") as f:
+            story7_rf_model = pickle.load(f)
+
+        print("\nValidated Story 7 dependency.")
+        print(f"Loaded Random Forest model from: {rf_model_path}")
+        print(f"Found Story 7 comparison table: {comparison_path}")
+        print(f"Story 7 RF model type: {type(story7_rf_model).__name__}")
+
+    except Exception as exc:
+        raise RuntimeError(
+            f"Story 7 rf_model.pkl exists but could not be loaded: {rf_model_path}"
+        ) from exc
+
+    return {
+        "story7_dir": story7_dir,
+        "rf_model_path": rf_model_path,
+        "comparison_path": comparison_path,
+    }
 
 
 def prepare_features(df):
@@ -206,7 +309,7 @@ def split_by_story6_indices(X, y, train_indices, test_indices):
 def compute_scale_pos_weight(y_train):
     """
     scale_pos_weight = negative class count / positive class count.
-    This handles class imbalance without changing the test set.
+    This handles class imbalance without SMOTE for XGBoost.
     """
 
     negative = int((y_train == 0).sum())
@@ -229,7 +332,16 @@ def tune_xgboost_with_optuna(X_train, y_train, X_test, y_test, scale_pos_weight,
     """
     Tune XGBoost with Optuna.
 
-    If Optuna is unavailable, the script raises a clear message.
+    Parameters tuned:
+    - n_estimators
+    - max_depth
+    - learning_rate
+    - subsample
+    - colsample_bytree
+    - min_child_weight
+    - gamma
+    - reg_lambda
+    - reg_alpha
     """
 
     try:
@@ -343,7 +455,7 @@ def evaluate_model(model, X_test, y_test, output_dir):
 
 def update_model_comparison(output_dir, models_dirs, xgb_metrics_df):
     """
-    Build a Story 8 comparison table using available Story 6 and Story 7 metrics.
+    Build Story 8 model comparison table using available Story 6 and Story 7 metrics.
     """
 
     comparison_frames = []
@@ -353,8 +465,9 @@ def update_model_comparison(output_dir, models_dirs, xgb_metrics_df):
 
         candidates = [
             models_dir / "model_comparison_table.csv",
-            models_dir / "task_41_model_comparison_tree_models.csv",
             models_dir / "task_34_logistic_baseline_metrics.csv",
+            models_dir / "task_41_model_comparison_table.csv",
+            models_dir / "task_41_model_comparison_tree_models.csv",
         ]
 
         for path in candidates:
@@ -373,6 +486,9 @@ def update_model_comparison(output_dir, models_dirs, xgb_metrics_df):
     if "model" in comparison.columns:
         comparison = comparison.drop_duplicates(subset=["model"], keep="last")
 
+    if "Model" in comparison.columns:
+        comparison = comparison.drop_duplicates(subset=["Model"], keep="last")
+
     comparison.to_csv(output_dir / "task_47_model_comparison_with_xgboost.csv", index=False)
 
     return comparison
@@ -382,9 +498,14 @@ def update_model_comparison(output_dir, models_dirs, xgb_metrics_df):
 # Task #48: SHAP plots
 # =========================================================
 
-def compute_shap_values(model, X_train, X_test, output_dir, max_rows=1000):
+def compute_shap_values(model, X_test, output_dir, max_rows=1000):
     """
-    Compute SHAP values on a sample of the test set to keep runtime reasonable.
+    Compute SHAP values for the best XGBoost model.
+
+    This satisfies Task #48:
+    - SHAP summary plot
+    - SHAP bar plot
+    - SHAP dependence plot for top feature
     """
 
     shap_sample = X_test.copy()
@@ -392,7 +513,7 @@ def compute_shap_values(model, X_train, X_test, output_dir, max_rows=1000):
     if len(shap_sample) > max_rows:
         shap_sample = shap_sample.sample(n=max_rows, random_state=42)
 
-    print("\nTask #48: Computing SHAP values...")
+    print("\nTask #48: Computing SHAP values for the best XGBoost model...")
     print(f"SHAP sample shape: {shap_sample.shape}")
 
     explainer = shap.TreeExplainer(model)
@@ -465,8 +586,8 @@ def write_shap_interpretation(feature_importance, metrics_df, output_dir):
     for i, row in enumerate(top_features.itertuples(index=False), start=1):
         lines.append(
             f"{i}. {row.feature}: This feature had one of the largest average SHAP impacts, "
-            f"meaning it strongly influenced whether the model pushed a prediction toward "
-            f"fatal or non-fatal collision risk."
+            f"meaning it strongly influenced whether the XGBoost model pushed a prediction "
+            f"toward fatal or non-fatal collision risk."
         )
 
     lines.append("")
@@ -495,6 +616,11 @@ def main(input_path, output_dir, indices_dir, models_dirs, n_trials):
     output_dir = ensure_output_dir(output_dir)
 
     df = load_encoded_data(input_path)
+
+    # Validate Story 6 and Story 7 dependencies before Story 8 training.
+    validate_story6_dependencies(indices_dir, models_dirs)
+    validate_story7_dependencies(models_dirs)
+
     train_indices, test_indices = load_story6_indices(indices_dir)
 
     X, y = prepare_features(df)
@@ -524,9 +650,8 @@ def main(input_path, output_dir, indices_dir, models_dirs, n_trials):
     metrics_df, _, _ = evaluate_model(model, X_test, y_test, output_dir)
     update_model_comparison(output_dir, models_dirs, metrics_df)
 
-    shap_values, shap_sample, feature_importance = compute_shap_values(
+    _, _, feature_importance = compute_shap_values(
         model,
-        X_train,
         X_test,
         output_dir,
     )
@@ -539,6 +664,7 @@ def main(input_path, output_dir, indices_dir, models_dirs, n_trials):
     print("- xgb_model.pkl")
     print("- shap_values.npy")
     print("- task_45_optuna_best_params.json")
+    print("- task_45_optuna_trials.csv")
     print("- task_47_xgboost_metrics.csv")
     print("- task_47_model_comparison_with_xgboost.csv")
     print("- task_48_shap_beeswarm.png")
