@@ -15,8 +15,6 @@ import warnings
 warnings.filterwarnings("ignore")
 
 from pathlib import Path
-import os
-import gdown
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -27,17 +25,9 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
-
-
-model_path = "outputs/story-9/task_54_best_model.pkl"
-
-if not os.path.exists(model_path):
-    os.makedirs("outputs/story-9", exist_ok=True)
-    gdown.download("https://drive.google.com/uc?id=1lQXt7xG_ef0LFlr49Za2yexjkFxH8dH1", model_path, quiet=False)
 # ─────────────────────────────────────────────────────────────────────────────
 # Config
 # ─────────────────────────────────────────────────────────────────────────────
-
 
 st.set_page_config(
     page_title="KSI Collision Severity Predictor",
@@ -377,7 +367,7 @@ def main():
         </h1>
         <p style="color:#95A5A6; margin:4px 0 0 0; font-size:0.9rem;">
             Toronto Motor Vehicle Collisions (2006–2026) &nbsp;|&nbsp;
-            XGBoost model (AUC = 0.88) &nbsp;|&nbsp;
+            XGBoost model (AUC = 0.8624) &nbsp;|&nbsp;
             Group 5 · DAMO-699-5 · University of Niagara Falls Canada
         </p>
     </div>
@@ -564,7 +554,7 @@ def main():
         Predictions are probabilistic and based on population-level patterns —
         they do not constitute individual traffic risk assessments.
         Not for operational or enforcement use.
-        The model achieves AUC = 0.88 on held-out test data; fatal recall = 63%
+        The model achieves AUC = 0.8624 on held-out test data; fatal recall = 55.8%
         at default threshold (0.5). &nbsp;|&nbsp;
         <b>Data recency note:</b> 2024–2026 data is underrepresented due to police
         reporting lag — model trained predominantly on 2006–2023 patterns.
