@@ -38,7 +38,7 @@ __pycache__/
 Thumbs.db
 
 # Models
-!outputs/story-9/task_54_best_model.pkl   # except this one
+.pkl
 
 
 # Pytest cache
