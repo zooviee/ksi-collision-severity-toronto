@@ -12,3 +12,9 @@ ipykernel>=6.0.0
 shap
 xgboost
 optuna
+folium
+geopandas
+shapely
+joblib
+streamlit
+gdown
