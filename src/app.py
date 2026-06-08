@@ -76,8 +76,30 @@ FEAT_LABELS = {
     "impactype_Turning Movement":          "Turning movement collision",
 }
 
-# Project root — always resolved relative to this file, not the working directory
+# ─────────────────────────────────────────────────────────────────────────────
+# Project root — always resolved relative to this file
+# ─────────────────────────────────────────────────────────────────────────────
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Auto-download model from Google Drive if not present (Streamlit Cloud)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_MODEL_GDRIVE_ID = "1lQXt7xG_ef0LFlr49Za2yexjkFxH8dH1"
+_MODEL_LOCAL     = PROJECT_ROOT / "outputs" / "story-9" / "task_54_best_model.pkl"
+
+if not _MODEL_LOCAL.exists():
+    try:
+        import gdown
+        _MODEL_LOCAL.parent.mkdir(parents=True, exist_ok=True)
+        gdown.download(
+            f"https://drive.google.com/uc?id={_MODEL_GDRIVE_ID}",
+            str(_MODEL_LOCAL),
+            quiet=False,
+        )
+    except Exception:
+        pass  # _find_model() will surface the friendly error if still missing
 
 
 def _find_model() -> Path:
@@ -238,8 +260,6 @@ def make_gauge(prob: float) -> plt.Figure:
                            facecolor="#0E1117")
     ax.set_facecolor("#0E1117")
 
-    # Draw arc segments: green → amber → red
-    theta  = np.linspace(np.pi, 0, 300)
     r_out, r_in = 1.0, 0.65
 
     def arc(t1, t2, color, alpha=1.0):
@@ -252,25 +272,19 @@ def make_gauge(prob: float) -> plt.Figure:
                 np.concatenate([y_out, y_in]),
                 color=color, alpha=alpha, zorder=2)
 
-    # Background track
     arc(np.pi, 0, "#2C3E50", alpha=0.6)
 
-    # Coloured fill up to probability
     needle_theta = np.pi * (1 - prob)
     if prob <= 0.33:
         arc(np.pi, needle_theta, "#27AE60")
     elif prob <= 0.60:
         arc(np.pi, min(needle_theta, np.pi * 0.67), "#27AE60")
-        if needle_theta < np.pi * 0.67:
-            arc(np.pi * 0.67, needle_theta, "#E67E22")
-        else:
-            arc(np.pi * 0.67, needle_theta, "#E67E22")
+        arc(np.pi * 0.67, needle_theta, "#E67E22")
     else:
         arc(np.pi, np.pi * 0.67, "#27AE60")
         arc(np.pi * 0.67, np.pi * 0.40, "#E67E22")
         arc(np.pi * 0.40, needle_theta, "#C0392B")
 
-    # Needle
     nx = np.cos(needle_theta) * 0.82
     ny = np.sin(needle_theta) * 0.82
     ax.annotate("", xy=(nx, ny), xytext=(0, 0),
@@ -278,7 +292,6 @@ def make_gauge(prob: float) -> plt.Figure:
                                 lw=2.5, mutation_scale=16))
     ax.plot(0, 0, "o", color="white", markersize=8, zorder=5)
 
-    # Labels
     pct   = prob * 100
     color = "#27AE60" if prob < 0.33 else "#E67E22" if prob < 0.60 else "#C0392B"
     label = "LOW RISK" if prob < 0.33 else "MODERATE RISK" if prob < 0.60 else "HIGH RISK"
@@ -288,7 +301,6 @@ def make_gauge(prob: float) -> plt.Figure:
     ax.text(0, -0.38, f"FATAL RISK — {label}", ha="center", va="center",
             fontsize=8, color=color, fontweight="bold")
 
-    # Tick labels
     for t, txt in [(np.pi, "0%"), (np.pi*0.5, "50%"), (0, "100%")]:
         ax.text(np.cos(t)*1.12, np.sin(t)*1.12, txt,
                 ha="center", va="center", fontsize=7, color="#95A5A6")
@@ -452,8 +464,6 @@ def main():
 
     with col_left:
         st.subheader("Scenario Summary")
-
-        # Show selected scenario as a readable table
         scenario_data = {
             "Parameter":  ["Age", "Hour", "Weekend", "Lighting", "Road Surface",
                            "Road Class", "Traffic Control", "Location",
@@ -474,8 +484,7 @@ def main():
                      height=min(450, 35 * len(scenario_data["Parameter"]) + 38))
 
     with col_right:
-        if predict_btn or True:  # auto-predict on any change
-            # Build feature vector
+        if predict_btn or True:
             X = build_feature_vector(
                 age=age, hour=hour, is_weekend=is_weekend,
                 light_cond=light_cond, road_surface=road_surface,
@@ -486,17 +495,14 @@ def main():
                 distracted=distracted, red_light=red_light,
             )
 
-            # Predict
-            prob     = float(model.predict_proba(X.values)[0, 1])
+            prob      = float(model.predict_proba(X.values)[0, 1])
             shap_vals = explainer.shap_values(X.values)[0]
 
-            # ── Gauge ──────────────────────────────────────────────────────
             st.subheader("Fatal Risk Prediction")
             gauge_fig = make_gauge(prob)
             st.pyplot(gauge_fig, use_container_width=True)
             plt.close(gauge_fig)
 
-            # Risk band alert
             if prob < 0.25:
                 st.success(f"✅ **Low risk** — {prob*100:.1f}% predicted fatal probability. "
                            f"Conditions are relatively safe.")
@@ -511,40 +517,39 @@ def main():
                          f"Extreme risk combination — Vision Zero priority scenario.")
 
     # ── SHAP contributors ─────────────────────────────────────────────────────
-    if "shap_vals" in dir() or predict_btn or True:
-        try:
-            st.markdown("---")
-            st.subheader("🧠 Top 3 SHAP Explainability Contributors")
+    try:
+        st.markdown("---")
+        st.subheader("🧠 Top 3 SHAP Explainability Contributors")
 
-            col_shap, col_shap_txt = st.columns([1, 1], gap="large")
+        col_shap, col_shap_txt = st.columns([1, 1], gap="large")
 
-            with col_shap:
-                shap_fig = make_shap_bar(shap_vals, X)
-                st.pyplot(shap_fig, use_container_width=True)
-                plt.close(shap_fig)
+        with col_shap:
+            shap_fig = make_shap_bar(shap_vals, X)
+            st.pyplot(shap_fig, use_container_width=True)
+            plt.close(shap_fig)
 
-            with col_shap_txt:
-                sv_series = pd.Series(shap_vals, index=CORE_FEATURES)
-                top3_feats = sv_series.abs().nlargest(3).index.tolist()
+        with col_shap_txt:
+            sv_series  = pd.Series(shap_vals, index=CORE_FEATURES)
+            top3_feats = sv_series.abs().nlargest(3).index.tolist()
 
-                st.markdown("**Plain-language interpretation:**")
-                for i, feat in enumerate(top3_feats, 1):
-                    shap_v   = sv_series[feat]
-                    feat_val = X[feat].iloc[0]
-                    label    = FEAT_LABELS.get(feat, feat)
-                    direction = "increases" if shap_v > 0 else "reduces"
-                    magnitude = "strongly" if abs(shap_v) > 0.3 else "moderately" if abs(shap_v) > 0.1 else "slightly"
-                    arrow     = "🔺" if shap_v > 0 else "🔻"
+            st.markdown("**Plain-language interpretation:**")
+            for i, feat in enumerate(top3_feats, 1):
+                shap_v    = sv_series[feat]
+                feat_val  = X[feat].iloc[0]
+                label     = FEAT_LABELS.get(feat, feat)
+                direction = "increases" if shap_v > 0 else "reduces"
+                magnitude = "strongly" if abs(shap_v) > 0.3 else "moderately" if abs(shap_v) > 0.1 else "slightly"
+                arrow     = "🔺" if shap_v > 0 else "🔻"
 
-                    st.markdown(
-                        f"{arrow} **#{i} — {label}** (value = {feat_val:.0f})  \n"
-                        f"This feature {magnitude} {direction} fatal risk "
-                        f"(SHAP = {shap_v:+.3f})"
-                    )
-        except Exception as e:
-            st.warning(f"SHAP display error: {e}")
+                st.markdown(
+                    f"{arrow} **#{i} — {label}** (value = {feat_val:.0f})  \n"
+                    f"This feature {magnitude} {direction} fatal risk "
+                    f"(SHAP = {shap_v:+.3f})"
+                )
+    except Exception as e:
+        st.warning(f"SHAP display error: {e}")
 
-    # ── Disclaimer ───────────────────────────────────────────────────────────
+    # ── Disclaimer ────────────────────────────────────────────────────────────
     st.markdown("---")
     st.markdown("""
     <div style="background:#1A1A2E; padding:12px 16px; border-radius:8px;

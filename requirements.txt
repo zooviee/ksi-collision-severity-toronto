@@ -17,4 +17,4 @@ geopandas
 shapely
 joblib
 streamlit
-gdown
+gdown>=4.7.1
