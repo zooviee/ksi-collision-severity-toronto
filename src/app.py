@@ -398,7 +398,7 @@ def main():
         )
         st.stop()
 
-    st.sidebar.caption(f"Model: `{model_path.relative_to(PROJECT_ROOT)}`")
+    # st.sidebar.caption(f"Model: `{model_path.relative_to(PROJECT_ROOT)}`")
     model     = load_model(str(model_path))
     explainer = get_explainer(model)
 
